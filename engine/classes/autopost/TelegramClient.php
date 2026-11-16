@@ -1,366 +1,380 @@
 <?php
 /**
- * DLE Social AutoPost - Telegram Bot API Client
- *
- * Handles communication with Telegram Bot API via cURL with HTML parsing,
- * inline button attachments, optional SOCKS5/HTTP proxy, custom API endpoints (TSPU bypass),
- * and network reachability diagnostic tools.
+ * DLE Social AutoPost Plugin
+ * Telegram Bot API Client
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostTelegramClient
+class Autopost_TelegramClient
 {
-    private const DEFAULT_API_BASE = 'https://api.telegram.org';
+    private $botToken;
+    private $chatId;
+    private $proxyConfig;
+    private $apiUrl;
 
-    private string $botToken;
-    private string $channelId;
-    private string $apiBaseUrl;
-    private array $proxyConfig;
-
-    public function __construct(string $botToken, string $channelId, array $proxyConfig = [], ?string $apiBaseUrl = null)
+    public function __construct($botToken, $chatId, array $proxyConfig = [], $apiUrl = 'https://api.telegram.org')
     {
         $this->botToken = trim($botToken);
-        $this->channelId = trim($channelId);
+        $this->chatId = trim($chatId);
         $this->proxyConfig = $proxyConfig;
-
-        // Custom API Base URL support (TSPU/DPI bypass via reverse proxy, mirror, or local telegram-bot-api)
-        $customUrl = trim($apiBaseUrl ?? '');
-        if (!empty($customUrl)) {
-            $this->apiBaseUrl = rtrim($customUrl, '/');
-        } else {
-            $this->apiBaseUrl = self::DEFAULT_API_BASE;
-        }
+        $this->apiUrl = !empty(trim($apiUrl)) ? rtrim(trim($apiUrl), '/') : 'https://api.telegram.org';
     }
 
     /**
-     * Send message to channel with optional photo and inline button.
+     * Send post to Telegram channel
      *
-     * @param string $text Formatted HTML text
-     * @param string|null $imageUrl Optional main image URL
-     * @param array $options ['button_text' => '', 'button_url' => '', 'disable_web_page_preview' => false]
-     * @return array ['success' => bool, 'message_id' => int|null, 'error' => string|null]
+     * @param string      $text
+     * @param array|null  $imageInfo ['url' => ..., 'local_path' => ...]
+     * @param string|null $buttonText
+     * @param string|null $buttonUrl
+     * @return array ['success' => bool, 'message_id' => string|null, 'error' => string|null]
      */
-    public function sendMessage(string $text, ?string $imageUrl = null, array $options = []): array
+    public function sendPost($text, $imageInfo = null, $buttonText = null, $buttonUrl = null)
     {
-        if (empty($this->botToken) || empty($this->channelId)) {
-            return ['success' => false, 'message_id' => null, 'error' => 'Telegram credentials not configured'];
+        if (empty($this->botToken) || empty($this->chatId)) {
+            return ['success' => false, 'error' => 'Telegram Bot Token or Chat ID is not configured'];
         }
 
-        // Build inline keyboard if button URL provided
         $replyMarkup = null;
-        if (!empty($options['button_url']) && !empty($options['button_text'])) {
+        if (!empty($buttonText) && !empty($buttonUrl)) {
             $replyMarkup = json_encode([
                 'inline_keyboard' => [
                     [
-                        [
-                            'text' => $options['button_text'],
-                            'url'  => $options['button_url'],
-                        ]
+                        ['text' => $buttonText, 'url' => $buttonUrl]
                     ]
                 ]
-            ], JSON_UNESCAPED_UNICODE);
+            ]);
         }
 
-        // If image URL is present, use sendPhoto; otherwise sendMessage
-        if (!empty($imageUrl)) {
-            return $this->sendPhoto($text, $imageUrl, $replyMarkup, $options);
+        // If image is provided, try sending photo
+        if (!empty($imageInfo)) {
+            $caption = Autopost_TemplateEngine::truncate($text, 1024);
+            $photoResult = $this->sendPhoto($imageInfo, $caption, $replyMarkup);
+            if ($photoResult['success']) {
+                return $photoResult;
+            }
+            // If sendPhoto failed specifically due to image issue, fallback to sendMessage
         }
 
+        // Send text message (max 4096 chars)
+        $messageText = Autopost_TemplateEngine::truncate($text, 4000);
+        return $this->sendMessage($messageText, $replyMarkup);
+    }
+
+    /**
+     * Send photo via Telegram API
+     *
+     * @param array       $imageInfo
+     * @param string      $caption
+     * @param string|null $replyMarkup
+     * @return array
+     */
+    public function sendPhoto($imageInfo, $caption, $replyMarkup = null)
+    {
         $params = [
-            'chat_id'                  => $this->channelId,
+            'chat_id'    => $this->chatId,
+            'caption'    => $caption,
+            'parse_mode' => 'HTML',
+        ];
+
+        if ($replyMarkup) {
+            $params['reply_markup'] = $replyMarkup;
+        }
+
+        // If local file exists, use CURLFile
+        if (!empty($imageInfo['local_path']) && file_exists($imageInfo['local_path'])) {
+            $params['photo'] = new CURLFile($imageInfo['local_path']);
+        } elseif (!empty($imageInfo['url'])) {
+            $params['photo'] = $imageInfo['url'];
+        } else {
+            return ['success' => false, 'error' => 'No valid photo source provided'];
+        }
+
+        return $this->request('sendPhoto', $params);
+    }
+
+    /**
+     * Send text message via Telegram API
+     *
+     * @param string      $text
+     * @param string|null $replyMarkup
+     * @return array
+     */
+    public function sendMessage($text, $replyMarkup = null)
+    {
+        $params = [
+            'chat_id'                  => $this->chatId,
             'text'                     => $text,
             'parse_mode'               => 'HTML',
-            'disable_web_page_preview' => !empty($options['disable_web_page_preview']) ? 'true' : 'false',
-            'disable_notification'     => !empty($options['disable_notification']) ? 'true' : 'false',
+            'disable_web_page_preview' => false,
         ];
 
         if ($replyMarkup) {
             $params['reply_markup'] = $replyMarkup;
         }
 
-        return $this->apiRequest('sendMessage', $params);
+        return $this->request('sendMessage', $params);
     }
 
     /**
-     * Send photo with caption.
+     * Test connection to bot and chat
+     *
+     * @return array ['success' => bool, 'bot_username' => string, 'chat_title' => string, 'error' => string|null]
      */
-    private function sendPhoto(string $caption, string $imageUrl, ?string $replyMarkup = null, array $options = []): array
+    public function testConnection()
     {
-        // Telegram caption limit is 1024 characters; truncate if necessary
-        if (mb_strlen($caption, 'UTF-8') > 1024) {
-            $caption = mb_substr($caption, 0, 1020, 'UTF-8') . '...';
+        if (empty($this->botToken)) {
+            return ['success' => false, 'error' => 'Bot Token is empty'];
         }
 
-        $params = [
-            'chat_id'              => $this->channelId,
-            'photo'                => $imageUrl,
-            'caption'              => $caption,
-            'parse_mode'           => 'HTML',
-            'disable_notification' => !empty($options['disable_notification']) ? 'true' : 'false',
-        ];
-
-        if ($replyMarkup) {
-            $params['reply_markup'] = $replyMarkup;
+        $botRes = $this->request('getMe');
+        if (!$botRes['success']) {
+            return ['success' => false, 'error' => 'Invalid Bot Token: ' . ($botRes['error'] ?? 'Unknown error')];
         }
 
-        $result = $this->apiRequest('sendPhoto', $params);
+        $botUsername = $botRes['result']['username'] ?? 'Unknown';
 
-        // Fallback: If image cannot be downloaded by Telegram servers (e.g. localhost or auth protected),
-        // fallback to standard sendMessage
-        if (!$result['success'] && strpos($result['error'] ?? '', 'wrong file identifier') !== false) {
-            unset($params['photo'], $params['caption']);
-            $params['text'] = $caption;
-            return $this->apiRequest('sendMessage', $params);
-        }
-
-        return $result;
-    }
-
-    /**
-     * Test connection to Telegram Bot API and verify bot token & channel access.
-     */
-    public function testConnection(): array
-    {
-        // 1. Check getMe
-        $getMe = $this->apiRequest('getMe');
-        if (!$getMe['success']) {
+        if (!empty($this->chatId)) {
+            $chatRes = $this->request('getChat', ['chat_id' => $this->chatId]);
+            if (!$chatRes['success']) {
+                return [
+                    'success'      => false,
+                    'bot_username' => $botUsername,
+                    'error'        => 'Chat error: ' . ($chatRes['error'] ?? 'Chat not found or bot is not an administrator')
+                ];
+            }
+            $chatTitle = $chatRes['result']['title'] ?? ($chatRes['result']['username'] ?? $this->chatId);
             return [
-                'success' => false,
-                'bot_name' => null,
-                'channel_title' => null,
-                'error' => 'getMe failed: ' . ($getMe['error'] ?? 'Unknown error'),
+                'success'      => true,
+                'bot_username' => $botUsername,
+                'chat_title'   => $chatTitle
             ];
         }
-
-        $botName = $getMe['result']['first_name'] ?? 'Bot';
-        $botUsername = $getMe['result']['username'] ?? '';
-
-        // 2. Check chat / channel access
-        $getChat = $this->apiRequest('getChat', ['chat_id' => $this->channelId]);
-        if (!$getChat['success']) {
-            return [
-                'success' => false,
-                'bot_name' => "{$botName} (@{$botUsername})",
-                'channel_title' => null,
-                'error' => 'getChat failed (verify channel ID and bot admin rights): ' . ($getChat['error'] ?? 'Unknown error'),
-            ];
-        }
-
-        $chatTitle = $getChat['result']['title'] ?? $this->channelId;
 
         return [
-            'success' => true,
-            'bot_name' => "{$botName} (@{$botUsername})",
-            'channel_title' => $chatTitle,
-            'error' => null,
+            'success'      => true,
+            'bot_username' => $botUsername,
+            'chat_title'   => 'N/A'
         ];
     }
 
     /**
-     * Check network reachability and latency of Telegram Bot API endpoints.
-     * Tests DNS resolution, TCP connection, and TLS handshake times directly to api.telegram.org
-     * and the configured custom endpoint to diagnose TSPU/DPI blocking.
+     * Check endpoint availability & network latency for TSPU diagnostic
      *
-     * @param string|null $targetUrl Optional specific URL to test (defaults to configured or api.telegram.org)
-     * @return array Diagnostic metrics and recommendations
+     * @param string|null $customUrl Optional custom URL to test in addition to official API
+     * @param array       $proxyConfig Optional proxy configuration to test
+     * @return array Detailed diagnostic report with latency, DNS, TCP, SSL stats and verdict
      */
-    public static function checkEndpointAvailability(?string $targetUrl = null, array $proxyConfig = []): array
+    public static function checkEndpointAvailability($customUrl = null, array $proxyConfig = [])
     {
-        $url = trim($targetUrl ?? '');
-        if (empty($url)) {
-            $url = self::DEFAULT_API_BASE;
-        }
+        $officialUrl = 'https://api.telegram.org';
+        $tests = [];
 
-        $parsed = parse_url($url);
-        $host = $parsed['host'] ?? 'api.telegram.org';
-        $port = $parsed['port'] ?? ($parsed['scheme'] === 'http' ? 80 : 443);
-
-        $diag = [
-            'target_url'     => $url,
-            'host'           => $host,
-            'port'           => $port,
-            'dns_resolved'   => false,
-            'ip_addresses'   => [],
-            'tcp_connected'  => false,
-            'ssl_handshake'  => false,
-            'http_code'      => 0,
-            'time_namelookup'=> 0.0,
-            'time_connect'   => 0.0,
-            'time_appconnect'=> 0.0,
-            'time_total'     => 0.0,
-            'blocked_by_tspu'=> false,
-            'proxy_needed'   => false,
-            'verdict'        => '',
-            'error'          => null,
+        // 1. Direct probe to official Telegram API
+        $officialProbe = self::probeUrl($officialUrl, []);
+        $tests['official_direct'] = [
+            'label'   => 'Прямое подключение к api.telegram.org',
+            'url'     => $officialUrl,
+            'proxy'   => false,
+            'result'  => $officialProbe
         ];
 
-        // 1. DNS Resolution check
-        $dnsStart = microtime(true);
-        $records = @dns_get_record($host, DNS_A + DNS_AAAA);
-        $diag['time_namelookup'] = round((microtime(true) - $dnsStart), 4);
-
-        if (!empty($records)) {
-            foreach ($records as $r) {
-                if (!empty($r['ip'])) {
-                    $diag['ip_addresses'][] = $r['ip'];
-                } elseif (!empty($r['ipv6'])) {
-                    $diag['ip_addresses'][] = $r['ipv6'];
-                }
-            }
-            $diag['dns_resolved'] = !empty($diag['ip_addresses']);
+        // 2. Probe official API via configured proxy (if proxy provided)
+        if (!empty($proxyConfig['address'])) {
+            $proxyProbe = self::probeUrl($officialUrl, $proxyConfig);
+            $tests['official_proxy'] = [
+                'label'   => 'Подключение к api.telegram.org через указанный прокси',
+                'url'     => $officialUrl,
+                'proxy'   => true,
+                'result'  => $proxyProbe
+            ];
         }
 
-        // 2. cURL HTTP/HTTPS Probe
-        $testEndpoint = rtrim($url, '/') . '/bot123456:FAKE_TOKEN_FOR_PROBE/getMe';
-        $ch = curl_init($testEndpoint);
+        // 3. Probe custom endpoint (if configured)
+        if (!empty($customUrl) && rtrim($customUrl, '/') !== $officialUrl) {
+            $customProbe = self::probeUrl($customUrl, []);
+            $tests['custom_endpoint'] = [
+                'label'   => 'Подключение к кастомному URL API (зеркало / реверс-прокси)',
+                'url'     => $customUrl,
+                'proxy'   => false,
+                'result'  => $customProbe
+            ];
+        }
 
+        // Analyze results and produce human-friendly verdict
+        $directOk = $tests['official_direct']['result']['success'];
+        $proxyOk = isset($tests['official_proxy']) ? $tests['official_proxy']['result']['success'] : null;
+        $customOk = isset($tests['custom_endpoint']) ? $tests['custom_endpoint']['result']['success'] : null;
+
+        $verdict = [];
+        if ($directOk) {
+            $verdict = [
+                'status'        => 'ok',
+                'class'         => 'success',
+                'need_proxy'    => false,
+                'title'         => 'Прямой доступ к Telegram API открыт!',
+                'recommendation'=> 'Сервер успешно соединяется с api.telegram.org без ограничений. Прокси и кастомный URL не требуются.'
+            ];
+        } elseif ($customOk) {
+            $verdict = [
+                'status'        => 'custom_ok',
+                'class'         => 'info',
+                'need_proxy'    => false,
+                'title'         => 'Прямой доступ заблокирован, но кастомный URL API работает!',
+                'recommendation'=> 'Прямой адрес api.telegram.org блокируется ТСПУ/провайдером, однако настроенный вами кастомный URL API отвечает штатно. Используйте его для публикации.'
+            ];
+        } elseif ($proxyOk) {
+            $verdict = [
+                'status'        => 'proxy_ok',
+                'class'         => 'warning',
+                'need_proxy'    => true,
+                'title'         => 'Прямой доступ заблокирован ТСПУ! Прокси работает успешно.',
+                'recommendation'=> 'Прямое подключение к api.telegram.org заблокировано ТСПУ (сброс TCP/TLS или таймаут). Настроенный прокси исправно обходит блокировку. Обязательно оставьте прокси включенным.'
+            ];
+        } else {
+            $verdict = [
+                'status'        => 'blocked',
+                'class'         => 'danger',
+                'need_proxy'    => true,
+                'title'         => 'Внимание: Доступ к Telegram API заблокирован!',
+                'recommendation'=> 'Прямое соединение к Telegram API блокируется (вероятно, ТСПУ РКН на сервере хостинга). Для работы автопостинга необходимо включить SOCKS5/HTTP прокси либо настроить свой URL реверс-прокси (зеркала).'
+            ];
+        }
+
+        return [
+            'tests'   => $tests,
+            'verdict' => $verdict
+        ];
+    }
+
+    /**
+     * Low-level network probe helper
+     *
+     * @param string $url
+     * @param array  $proxyConfig
+     * @return array
+     */
+    private static function probeUrl($url, array $proxyConfig = [])
+    {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 8);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 6);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'DLE-Social-AutoPost-Probe/1.1');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_HEADER, false);
 
-        // Apply proxy if requested
-        if (!empty($proxyConfig['tg_proxy_enable']) && $proxyConfig['tg_proxy_enable'] === '1' && !empty($proxyConfig['tg_proxy_address'])) {
-            $proxyType = ($proxyConfig['tg_proxy_type'] ?? '') === 'CURLPROXY_SOCKS5' ? CURLPROXY_SOCKS5 : CURLPROXY_HTTP;
+        if (!empty($proxyConfig['address'])) {
+            $proxyType = (isset($proxyConfig['type']) && strtolower($proxyConfig['type']) === 'socks5')
+                ? CURLPROXY_SOCKS5
+                : CURLPROXY_HTTP;
             curl_setopt($ch, CURLOPT_PROXYTYPE, $proxyType);
-            curl_setopt($ch, CURLOPT_PROXY, $proxyConfig['tg_proxy_address']);
-            if (!empty($proxyConfig['tg_proxy_auth'])) {
-                curl_setopt($ch, CURLOPT_PROXYUSERPWD, $proxyConfig['tg_proxy_auth']);
+            curl_setopt($ch, CURLOPT_PROXY, $proxyConfig['address']);
+            if (!empty($proxyConfig['auth'])) {
+                curl_setopt($ch, CURLOPT_PROXYUSERPWD, $proxyConfig['auth']);
             }
         }
 
-        $body = curl_exec($ch);
-        $curlErrno = curl_errno($ch);
-        $curlError = curl_error($ch);
+        $start = microtime(true);
+        $response = curl_exec($ch);
+        $totalTime = microtime(true) - $start;
 
+        $curlError = curl_error($ch);
+        $curlErrno = curl_errno($ch);
         $info = curl_getinfo($ch);
         curl_close($ch);
 
-        $diag['http_code']       = (int)($info['http_code'] ?? 0);
-        $diag['time_namelookup'] = round($info['namelookup_time'] ?? $diag['time_namelookup'], 4);
-        $diag['time_connect']    = round($info['connect_time'] ?? 0.0, 4);
-        $diag['time_appconnect'] = round($info['appconnect_time'] ?? 0.0, 4);
-        $diag['time_total']      = round($info['total_time'] ?? 0.0, 4);
+        $httpCode = intval($info['http_code'] ?? 0);
 
-        if ($diag['time_connect'] > 0) {
-            $diag['tcp_connected'] = true;
-        }
-        if ($diag['time_appconnect'] > 0 || ($parsed['scheme'] === 'http' && $diag['tcp_connected'])) {
-            $diag['ssl_handshake'] = true;
-        }
+        // Telegram root typically returns 404 with JSON {"ok":false,"error_code":404,...}
+        // Any HTTP response from server means connection succeeded
+        $isSuccess = ($response !== false && $httpCode > 0 && $httpCode < 500);
 
-        // Diagnostic analysis
-        // Note: For a fake token, Telegram Bot API returns HTTP 401 or 404 with JSON {"ok":false,"error_code":401...}
-        // This confirms the server is reachable and NOT blocked!
-        if ($diag['http_code'] === 401 || $diag['http_code'] === 404 || ($diag['http_code'] >= 200 && $diag['http_code'] < 400)) {
-            $diag['blocked_by_tspu'] = false;
-            $diag['proxy_needed'] = false;
-            $diag['verdict'] = 'Доступ свободен. Эндпоинт отвечает штатно (' . $diag['time_total'] . ' сек). Прокси или зеркало НЕ требуются.';
-            return $diag;
-        }
-
-        // Detection of TSPU/DPI blocks:
-        // CURLE_OPERATION_TIMEDOUT (28): Connection drops or silent drops after ClientHello (classic TSPU behavior)
-        // CURLE_COULDNT_CONNECT (7): Connection refused / TCP reset
-        // CURLE_SSL_CONNECT_ERROR (35): Handshake reset by TSPU
-        if (in_array($curlErrno, [CURLE_OPERATION_TIMEDOUT, CURLE_COULDNT_CONNECT, CURLE_SSL_CONNECT_ERROR], true)) {
-            $diag['blocked_by_tspu'] = true;
-            $diag['proxy_needed'] = true;
-            $diag['error'] = "cURL error {$curlErrno}: {$curlError}";
-            $diag['verdict'] = 'Блокировка ТСПУ / Сетевой сброс. Соединение сбрасывается или зависает по таймауту. ТРЕБУЕТСЯ прокси или кастомный URL (зеркало / reverse proxy).';
-            return $diag;
-        }
-
-        if (!$diag['dns_resolved']) {
-            $diag['blocked_by_tspu'] = true;
-            $diag['proxy_needed'] = true;
-            $diag['error'] = 'Не удалось разрешить DNS-имя хоста ' . $host;
-            $diag['verdict'] = 'DNS блокировка или отсутствие подключения к сети. ТРЕБУЕТСЯ прокси или зеркало.';
-            return $diag;
-        }
-
-        // Generic error
-        $diag['error'] = $curlErrno ? "cURL error {$curlErrno}: {$curlError}" : "HTTP Status {$diag['http_code']}";
-        $diag['proxy_needed'] = true;
-        $diag['verdict'] = 'Соединение нестабильно (' . ($diag['error'] ?? '') . '). Рекомендуется настроить прокси или зеркало.';
-
-        return $diag;
+        return [
+            'success'    => $isSuccess,
+            'http_code'  => $httpCode,
+            'time_ms'    => round(($info['total_time'] ?? $totalTime) * 1000, 1),
+            'connect_ms' => round(($info['connect_time'] ?? 0) * 1000, 1),
+            'dns_ms'     => round(($info['namelookup_time'] ?? 0) * 1000, 1),
+            'tls_ms'     => round(($info['appconnect_time'] ?? 0) * 1000, 1),
+            'error'      => !empty($curlError) ? "cURL error [{$curlErrno}]: {$curlError}" : null,
+            'ip'         => $info['primary_ip'] ?? null,
+        ];
     }
 
     /**
-     * Execute HTTP request to Telegram Bot API.
+     * Make HTTP request to Telegram API
+     *
+     * @param string $method
+     * @param array  $params
+     * @return array
      */
-    private function apiRequest(string $method, array $params = []): array
+    private function request($method, array $params = [])
     {
-        $url = $this->apiBaseUrl . '/bot' . $this->botToken . '/' . $method;
+        $url = $this->apiUrl . '/bot' . $this->botToken . '/' . $method;
 
-        $ch = curl_init($url);
-
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 25);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 20);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'DLE-Social-AutoPost/1.1');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
-        // Apply proxy settings if enabled
-        if (!empty($this->proxyConfig['tg_proxy_enable']) && $this->proxyConfig['tg_proxy_enable'] === '1' && !empty($this->proxyConfig['tg_proxy_address'])) {
-            $proxyType = ($this->proxyConfig['tg_proxy_type'] ?? '') === 'CURLPROXY_SOCKS5' ? CURLPROXY_SOCKS5 : CURLPROXY_HTTP;
+        if (!empty($params)) {
+            curl_setopt($ch, CURLOPT_POST, true);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+        }
+
+        // Apply proxy if configured
+        if (!empty($this->proxyConfig['enable']) && !empty($this->proxyConfig['address'])) {
+            $proxyType = (isset($this->proxyConfig['type']) && strtolower($this->proxyConfig['type']) === 'socks5')
+                ? CURLPROXY_SOCKS5
+                : CURLPROXY_HTTP;
             curl_setopt($ch, CURLOPT_PROXYTYPE, $proxyType);
-            curl_setopt($ch, CURLOPT_PROXY, $this->proxyConfig['tg_proxy_address']);
+            curl_setopt($ch, CURLOPT_PROXY, $this->proxyConfig['address']);
 
-            if (!empty($this->proxyConfig['tg_proxy_auth'])) {
-                curl_setopt($ch, CURLOPT_PROXYUSERPWD, $this->proxyConfig['tg_proxy_auth']);
+            if (!empty($this->proxyConfig['auth'])) {
+                curl_setopt($ch, CURLOPT_PROXYUSERPWD, $this->proxyConfig['auth']);
             }
         }
 
-        $body = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $errstr = curl_error($ch);
+        $response = curl_exec($ch);
+        $curlError = curl_error($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($errno !== 0) {
-            return [
-                'success' => false,
-                'result'  => null,
-                'error'   => "cURL error {$errno}: {$errstr} (проверьте блокировку ТСПУ или настройте кастомный URL / прокси)",
-            ];
+        if ($response === false) {
+            return ['success' => false, 'error' => 'cURL error: ' . $curlError];
         }
 
-        $data = json_decode($body, true);
-        if (!is_array($data)) {
-            return [
-                'success' => false,
-                'result'  => null,
-                'error'   => "Invalid JSON response (HTTP {$httpCode})",
-            ];
+        $data = json_decode($response, true);
+        if (!$data || !isset($data['ok'])) {
+            return ['success' => false, 'error' => "HTTP {$httpCode}: Invalid JSON response ({$response})"];
         }
 
-        if (empty($data['ok'])) {
-            $errMsg = $data['description'] ?? 'Unknown Telegram error';
-            $errCode = $data['error_code'] ?? $httpCode;
-            return [
-                'success' => false,
-                'result'  => null,
-                'error'   => "[Telegram {$errCode}] {$errMsg}",
-            ];
+        if (!$data['ok']) {
+            $desc = $data['description'] ?? 'Unknown Telegram error';
+            $code = $data['error_code'] ?? $httpCode;
+            return ['success' => false, 'error' => "Telegram error [{$code}]: {$desc}"];
+        }
+
+        $messageId = null;
+        if (isset($data['result']['message_id'])) {
+            $messageId = (string)$data['result']['message_id'];
         }
 
         return [
             'success'    => true,
-            'result'     => $data['result'] ?? null,
-            'message_id' => $data['result']['message_id'] ?? null,
-            'error'      => null,
+            'message_id' => $messageId,
+            'result'     => $data['result'] ?? []
         ];
     }
 }

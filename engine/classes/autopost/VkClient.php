@@ -1,224 +1,256 @@
 <?php
 /**
- * DLE Social AutoPost - VK API Client
- *
- * Implements wall posting via VK API v5.131+ using Community Access Tokens.
+ * DLE Social AutoPost Plugin
+ * VK (Vkontakte) API Client
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostVkClient
+class Autopost_VkClient
 {
-    private const API_VERSION = '5.131';
-    private const API_BASE = 'https://api.vk.com/method/';
+    const API_VERSION = '5.131';
 
-    private string $accessToken;
-    private string $ownerId; // negative int for group: -12345678
-    private bool $fromGroup;
-    private bool $signed;
+    private $token;
+    private $groupId;
+    private $fromGroup;
+    private $signed;
 
-    public function __construct(string $accessToken, string $ownerId, bool $fromGroup = true, bool $signed = false)
+    public function __construct($token, $groupId, $fromGroup = 1, $signed = 0)
     {
-        $this->accessToken = trim($accessToken);
-        $cleanId = preg_replace('/[^\d]/', '', $ownerId);
-        $this->ownerId = '-' . $cleanId; // ensure negative for community
-        $this->fromGroup = $fromGroup;
-        $this->signed = $signed;
+        $this->token = trim($token);
+        // Normalize group ID (ensure positive number for API calls, negative for wall owner_id)
+        $this->groupId = abs(intval($groupId));
+        $this->fromGroup = intval($fromGroup);
+        $this->signed = intval($signed);
     }
 
     /**
-     * Send post to community wall.
+     * Send post to VK community wall
      *
-     * @param string $message Plain text message (VK doesn't support HTML)
-     * @param string|null $imageUrl Optional main image to attach
-     * @param array $options Additional VK options
+     * @param string     $text
+     * @param array|null $imageInfo ['url' => ..., 'local_path' => ...]
+     * @param string|null $linkUrl
      * @return array ['success' => bool, 'post_id' => string|null, 'error' => string|null]
      */
-    public function postToWall(string $message, ?string $imageUrl = null, array $options = []): array
+    public function sendPost($text, $imageInfo = null, $linkUrl = null)
     {
-        if (empty($this->accessToken) || empty($this->ownerId) || $this->ownerId === '-') {
-            return ['success' => false, 'post_id' => null, 'error' => 'VK credentials not configured'];
+        if (empty($this->token) || empty($this->groupId)) {
+            return ['success' => false, 'error' => 'VK Access Token or Group ID is not configured'];
         }
 
         $attachments = [];
 
-        // Upload photo if provided
-        if (!empty($imageUrl)) {
-            $photoAttachment = $this->uploadWallPhoto($imageUrl);
+        // Upload photo if present
+        if (!empty($imageInfo)) {
+            $photoAttachment = $this->uploadWallPhoto($imageInfo);
             if ($photoAttachment) {
                 $attachments[] = $photoAttachment;
             }
         }
 
+        // Attach link if provided and not already in text
+        if (!empty($linkUrl) && strpos($text, $linkUrl) === false) {
+            $attachments[] = $linkUrl;
+        }
+
         $params = [
-            'owner_id'    => $this->ownerId,
-            'from_group'  => $this->fromGroup ? 1 : 0,
-            'signed'      => $this->signed ? 1 : 0,
-            'message'     => $message,
-            'attachments' => implode(',', $attachments),
+            'owner_id'   => '-' . $this->groupId,
+            'from_group' => $this->fromGroup,
+            'signed'     => $this->signed,
+            'message'    => $text,
         ];
 
-        $response = $this->apiRequest('wall.post', $params);
-
-        if (!empty($response['response']['post_id'])) {
-            return [
-                'success' => true,
-                'post_id' => $this->ownerId . '_' . $response['response']['post_id'],
-                'error'   => null,
-            ];
+        if (!empty($attachments)) {
+            $params['attachments'] = implode(',', $attachments);
         }
 
-        $errorMsg = $response['error']['error_msg'] ?? 'Unknown VK API error';
-        $errorCode = $response['error']['error_code'] ?? 0;
+        $response = $this->request('wall.post', $params);
 
+        if (!$response['success']) {
+            return $response;
+        }
+
+        $postId = $response['result']['post_id'] ?? null;
         return [
-            'success' => false,
-            'post_id' => null,
-            'error'   => "[Code {$errorCode}] {$errorMsg}",
+            'success' => true,
+            'post_id' => $postId ? (string)$postId : null,
+            'result'  => $response['result']
         ];
     }
 
     /**
-     * Upload photo to community wall album.
+     * Upload photo to VK server for wall attachment
      *
-     * Steps:
-     * 1. photos.getWallUploadServer
-     * 2. POST multipart file to upload_url
-     * 3. photos.saveWallPhoto
+     * @param array $imageInfo
+     * @return string|null e.g. "photo-123456_789012"
      */
-    public function uploadWallPhoto(string $imageUrl): ?string
+    private function uploadWallPhoto(array $imageInfo)
     {
-        require_once ENGINE_DIR . '/classes/autopost/MediaHelper.php';
+        // 1. Get upload server
+        $serverRes = $this->request('photos.getWallUploadServer', [
+            'group_id' => $this->groupId
+        ]);
 
-        $localFile = AutopostMediaHelper::downloadToTemp($imageUrl);
-        if (!$localFile) {
+        if (!$serverRes['success'] || empty($serverRes['result']['upload_url'])) {
             return null;
         }
 
-        try {
-            // 1. Get upload server
-            $groupId = abs((int)$this->ownerId);
-            $serverResp = $this->apiRequest('photos.getWallUploadServer', ['group_id' => $groupId]);
+        $uploadUrl = $serverRes['result']['upload_url'];
 
-            if (empty($serverResp['response']['upload_url'])) {
-                @unlink($localFile);
-                return null;
+        // Determine file to upload
+        $tempFile = null;
+        $filePath = null;
+
+        if (!empty($imageInfo['local_path']) && file_exists($imageInfo['local_path'])) {
+            $filePath = $imageInfo['local_path'];
+        } elseif (!empty($imageInfo['url'])) {
+            // Download remote image to temporary file
+            $tempFile = tempnam(sys_get_temp_dir(), 'vk_img_');
+            $imgContent = @file_get_contents($imageInfo['url']);
+            if ($imgContent !== false && !empty($imgContent)) {
+                file_put_contents($tempFile, $imgContent);
+                $filePath = $tempFile;
             }
+        }
 
-            $uploadUrl = $serverResp['response']['upload_url'];
-
-            // 2. Upload file via CURL multipart
-            $ch = curl_init($uploadUrl);
-            $cfile = new CURLFile($localFile, mime_content_type($localFile), basename($localFile));
-
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, ['photo' => $cfile]);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-
-            $uploadResult = curl_exec($ch);
-            curl_close($ch);
-            @unlink($localFile);
-
-            if (!$uploadResult) {
-                return null;
-            }
-
-            $uploadData = json_decode($uploadResult, true);
-            if (empty($uploadData['photo']) || empty($uploadData['server']) || empty($uploadData['hash'])) {
-                return null;
-            }
-
-            // 3. Save photo
-            $saveParams = [
-                'group_id' => $groupId,
-                'photo'    => $uploadData['photo'],
-                'server'   => $uploadData['server'],
-                'hash'     => $uploadData['hash'],
-            ];
-
-            $saveResp = $this->apiRequest('photos.saveWallPhoto', $saveParams);
-
-            if (!empty($saveResp['response'][0]['id'])) {
-                $photo = $saveResp['response'][0];
-                return 'photo' . $photo['owner_id'] . '_' . $photo['id'];
-            }
-
-            return null;
-        } catch (\Throwable $e) {
-            @unlink($localFile);
+        if (!$filePath || !file_exists($filePath)) {
+            if ($tempFile && file_exists($tempFile)) @unlink($tempFile);
             return null;
         }
+
+        // 2. Upload file to VK upload URL
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $uploadUrl);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, [
+            'photo' => new CURLFile($filePath)
+        ]);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+
+        $uploadRaw = curl_exec($ch);
+        curl_close($ch);
+
+        if ($tempFile && file_exists($tempFile)) {
+            @unlink($tempFile);
+        }
+
+        if (!$uploadRaw) {
+            return null;
+        }
+
+        $uploadData = json_decode($uploadRaw, true);
+        if (empty($uploadData['photo']) || empty($uploadData['server']) || empty($uploadData['hash'])) {
+            return null;
+        }
+
+        // 3. Save wall photo in VK
+        $saveRes = $this->request('photos.saveWallPhoto', [
+            'group_id' => $this->groupId,
+            'photo'    => $uploadData['photo'],
+            'server'   => $uploadData['server'],
+            'hash'     => $uploadData['hash']
+        ]);
+
+        if (!$saveRes['success'] || empty($saveRes['result'][0]['id'])) {
+            return null;
+        }
+
+        $saved = $saveRes['result'][0];
+        return 'photo' . $saved['owner_id'] . '_' . $saved['id'];
     }
 
     /**
-     * Test connection to VK API with configured token.
+     * Test VK connection & permissions
+     *
+     * @return array
      */
-    public function testConnection(): array
+    public function testConnection()
     {
-        $groupId = abs((int)$this->ownerId);
-        $resp = $this->apiRequest('groups.getById', ['group_id' => $groupId]);
-
-        if (!empty($resp['response'][0]['id'])) {
-            $group = $resp['response'][0];
-            return [
-                'success' => true,
-                'name'    => $group['name'] ?? 'VK Group',
-                'id'      => $group['id'] ?? $groupId,
-                'error'   => null,
-            ];
+        if (empty($this->token)) {
+            return ['success' => false, 'error' => 'VK Access Token is empty'];
         }
 
-        $errorMsg = $resp['error']['error_msg'] ?? 'Unknown error';
-        $errorCode = $resp['error']['error_code'] ?? 0;
+        if (empty($this->groupId)) {
+            return ['success' => false, 'error' => 'VK Group ID is empty'];
+        }
 
+        $res = $this->request('groups.getById', [
+            'group_id' => $this->groupId,
+            'fields'   => 'description,can_post'
+        ]);
+
+        if (!$res['success']) {
+            return ['success' => false, 'error' => 'VK API error: ' . ($res['error'] ?? 'Unknown error')];
+        }
+
+        $group = $res['result']['groups'][0] ?? ($res['result'][0] ?? null);
+        if (!$group) {
+            return ['success' => false, 'error' => 'Group not found for ID: ' . $this->groupId];
+        }
+
+        $groupName = $group['name'] ?? ('ID ' . $this->groupId);
         return [
-            'success' => false,
-            'name'    => null,
-            'id'      => null,
-            'error'   => "[Code {$errorCode}] {$errorMsg}",
+            'success'    => true,
+            'group_name' => $groupName,
+            'screen_name'=> $group['screen_name'] ?? ''
         ];
     }
 
     /**
-     * Execute VK API HTTP request.
+     * Execute VK API request
+     *
+     * @param string $method
+     * @param array  $params
+     * @return array
      */
-    private function apiRequest(string $method, array $params): array
+    private function request($method, array $params = [])
     {
-        $params['access_token'] = $this->accessToken;
+        $params['access_token'] = $this->token;
         $params['v'] = self::API_VERSION;
 
-        $url = self::API_BASE . $method;
+        $url = 'https://api.vk.com/method/' . $method;
 
-        $ch = curl_init($url);
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 25);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'DLE-Social-AutoPost/1.0');
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
-        $body = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $errstr = curl_error($ch);
+        $response = curl_exec($ch);
+        $curlError = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($errno !== 0) {
-            return ['error' => ['error_code' => $errno, 'error_msg' => 'cURL error: ' . $errstr]];
+        if ($response === false) {
+            return ['success' => false, 'error' => 'cURL error: ' . $curlError];
         }
 
-        $data = json_decode($body, true);
-        if (!is_array($data)) {
-            return ['error' => ['error_code' => 500, 'error_msg' => 'Invalid JSON from VK API']];
+        $data = json_decode($response, true);
+        if (!$data) {
+            return ['success' => false, 'error' => "HTTP {$httpCode}: Invalid JSON response ({$response})"];
         }
 
-        return $data;
+        if (isset($data['error'])) {
+            $errCode = $data['error']['error_code'] ?? $httpCode;
+            $errMsg = $data['error']['error_msg'] ?? 'Unknown VK error';
+            return ['success' => false, 'error' => "VK error [{$errCode}]: {$errMsg}"];
+        }
+
+        return [
+            'success' => true,
+            'result'  => $data['response'] ?? []
+        ];
     }
 }

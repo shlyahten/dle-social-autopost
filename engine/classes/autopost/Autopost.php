@@ -1,242 +1,291 @@
 <?php
 /**
- * DLE Social AutoPost - Main Dispatcher & Event Orchestrator
- *
- * Hooks into DLE news lifecycle (addnews, editnews, cron) and routes posts
- * to Telegram and VK based on category filters, publication status, and queue rules.
+ * DLE Social AutoPost Plugin
+ * Main Facade & Event Orchestrator
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-require_once ENGINE_DIR . '/classes/autopost/Config.php';
-require_once ENGINE_DIR . '/classes/autopost/Logger.php';
-require_once ENGINE_DIR . '/classes/autopost/Queue.php';
-require_once ENGINE_DIR . '/classes/autopost/MediaHelper.php';
-require_once ENGINE_DIR . '/classes/autopost/TemplateEngine.php';
-require_once ENGINE_DIR . '/classes/autopost/TelegramClient.php';
-require_once ENGINE_DIR . '/classes/autopost/VkClient.php';
+require_once __DIR__ . '/Config.php';
+require_once __DIR__ . '/MediaHelper.php';
+require_once __DIR__ . '/TemplateEngine.php';
+require_once __DIR__ . '/TelegramClient.php';
+require_once __DIR__ . '/VkClient.php';
+require_once __DIR__ . '/Logger.php';
+require_once __DIR__ . '/Queue.php';
 
-class AutopostDispatcher
+class Autopost_Main
 {
     /**
-     * Handle news save/update hook from addnews.php or editnews.php.
+     * Hook triggered when a news item is saved (added or updated)
      *
-     * @param int $newsId ID of saved news
-     * @param array $newsData Full news data array
-     * @param string $action 'add' or 'edit'
+     * @param int   $newsId
+     * @param array $options ['send_tg' => bool, 'send_vk' => bool, 'is_new' => bool]
+     * @return bool
      */
-    public static function handleNewsSaved(int $newsId, array $newsData, string $action = 'add'): void
-    {
-        $config = AutopostConfig::load();
-
-        if (empty($config['enable']) || $config['enable'] !== '1') {
-            return;
-        }
-
-        // Do not publish if news is unapproved or scheduled for future
-        $approve = (int)($newsData['approve'] ?? 1);
-        if ($approve !== 1) {
-            return;
-        }
-
-        // Check if date is in the future (scheduled news)
-        $postDate = !empty($newsData['date']) ? strtotime($newsData['date']) : time();
-        if ($postDate > time()) {
-            // Queue for delayed execution by CRON
-            AutopostQueue::enqueue($newsId, 'all');
-            return;
-        }
-
-        // Category filter check
-        if (!self::isCategoryAllowed($newsData['category'] ?? '', $config)) {
-            return;
-        }
-
-        // Process immediate dispatch or queue
-        self::publishNewsRow($newsData, 'all', $config);
-    }
-
-    /**
-     * Publish a news item by ID (used by CRON worker and admin test).
-     */
-    public static function publishNewsId(int $newsId, string $target = 'all'): bool
+    public static function handleNewsSave($newsId, array $options = [])
     {
         global $db;
 
-        if (!$db) {
+        $newsId = intval($newsId);
+        if ($newsId <= 0) {
             return false;
         }
 
-        $newsId = (int)$newsId;
-        $news = $db->super_query("SELECT * FROM " . PREFIX . "_post WHERE id = {$newsId} LIMIT 1");
+        $config = Autopost_Config::get();
+        if (empty($config['enabled'])) {
+            return false;
+        }
 
+        // Fetch news details
+        $news = $db->super_query("SELECT * FROM " . PREFIX . "_post WHERE id = '{$newsId}'");
         if (empty($news['id'])) {
-            AutopostLogger::error($newsId, $target, 'News post not found in database');
             return false;
         }
 
-        $config = AutopostConfig::load();
-        return self::publishNewsRow($news, $target, $config);
-    }
+        // Determine if target should be sent
+        $sendTg = false;
+        $sendVk = false;
 
-    /**
-     * Publish given news row to specified target ('all', 'telegram', 'vk').
-     */
-    public static function publishNewsRow(array $news, string $target = 'all', ?array $config = null): bool
-    {
-        if ($config === null) {
-            $config = AutopostConfig::load();
-        }
+        $inCategory = self::isCategoryAllowed($news['category'], $config['categories'] ?? []);
 
-        $newsId = (int)($news['id'] ?? 0);
-        $overallSuccess = true;
-
-        // 1. Telegram Dispatch
-        if ($target === 'all' || $target === 'telegram') {
-            if (!empty($config['tg_enable']) && $config['tg_enable'] === '1') {
-                if (!AutopostQueue::isAlreadyPublished($newsId, 'telegram')) {
-                    $tgResult = self::dispatchToTelegram($news, $config);
-                    if (!$tgResult) {
-                        $overallSuccess = false;
-                    }
-                }
+        // Telegram decision
+        if (!empty($config['tg_enabled'])) {
+            if (isset($options['send_tg'])) {
+                $sendTg = (bool)$options['send_tg'];
+            } else {
+                $sendTg = $inCategory;
             }
         }
 
-        // 2. VK Dispatch
-        if ($target === 'all' || $target === 'vk') {
-            if (!empty($config['vk_enable']) && $config['vk_enable'] === '1') {
-                if (!AutopostQueue::isAlreadyPublished($newsId, 'vk')) {
-                    $vkResult = self::dispatchToVk($news, $config);
-                    if (!$vkResult) {
-                        $overallSuccess = false;
-                    }
-                }
+        // VK decision
+        if (!empty($config['vk_enabled'])) {
+            if (isset($options['send_vk'])) {
+                $sendVk = (bool)$options['send_vk'];
+            } else {
+                $sendVk = $inCategory;
             }
         }
 
-        return $overallSuccess;
-    }
-
-    /**
-     * Dispatch news item to Telegram.
-     */
-    public static function dispatchToTelegram(array $news, array $config): bool
-    {
-        $newsId = (int)($news['id'] ?? 0);
-
-        try {
-            $proxyConfig = [
-                'tg_proxy_enable'  => $config['tg_proxy_enable'] ?? '0',
-                'tg_proxy_type'    => $config['tg_proxy_type'] ?? 'CURLPROXY_SOCKS5',
-                'tg_proxy_address' => $config['tg_proxy_address'] ?? '',
-                'tg_proxy_auth'    => $config['tg_proxy_auth'] ?? '',
-            ];
-
-            $apiUrl = $config['tg_api_url'] ?? null;
-            $client = new AutopostTelegramClient($config['tg_bot_token'] ?? '', $config['tg_channel_id'] ?? '', $proxyConfig, $apiUrl);
-
-            // Render message template
-            $template = $config['tg_template'] ?? "<b>{title}</b>\n\n{short-story}\n\n{tags}";
-            $message = AutopostTemplateEngine::render($template, $news, 'telegram', $config);
-
-            // Extract main image if photo sending is enabled
-            $imageUrl = null;
-            if (!empty($config['tg_send_photo']) && $config['tg_send_photo'] === '1') {
-                $imageUrl = AutopostMediaHelper::extractMainImage($news, $config);
-            }
-
-            // Options (buttons, preview)
-            $options = [
-                'disable_web_page_preview' => ($config['tg_disable_web_page_preview'] ?? '0') === '1',
-                'disable_notification'     => ($config['tg_disable_notification'] ?? '0') === '1',
-            ];
-
-            if (!empty($config['tg_inline_button']) && $config['tg_inline_button'] === '1') {
-                $options['button_text'] = $config['tg_button_text'] ?? 'Читать на сайте';
-                $options['button_url']  = AutopostTemplateEngine::buildNewsUrl($news, 'telegram', $config);
-            }
-
-            $response = $client->sendMessage($message, $imageUrl, $options);
-
-            if ($response['success']) {
-                AutopostLogger::success($newsId, 'telegram', (string)($response['message_id'] ?? ''));
-                return true;
-            }
-
-            AutopostLogger::error($newsId, 'telegram', $response['error'] ?? 'Unknown Telegram error');
-            return false;
-        } catch (\Throwable $e) {
-            AutopostLogger::error($newsId, 'telegram', 'Exception: ' . $e->getMessage());
+        if (!$sendTg && !$sendVk) {
             return false;
         }
-    }
 
-    /**
-     * Dispatch news item to VK.
-     */
-    public static function dispatchToVk(array $news, array $config): bool
-    {
-        $newsId = (int)($news['id'] ?? 0);
+        // Determine target string
+        $target = ($sendTg && $sendVk) ? 'all' : ($sendTg ? 'telegram' : 'vk');
 
-        try {
-            $client = new AutopostVkClient(
-                $config['vk_access_token'] ?? '',
-                $config['vk_owner_id'] ?? '',
-                ($config['vk_from_group'] ?? '1') === '1',
-                ($config['vk_signed'] ?? '0') === '1'
-            );
+        // Check if news is approved and not scheduled for the future
+        $isApproved = !empty($news['approve']);
+        $now = time();
+        $newsTime = strtotime($news['date']);
+        $isFuture = ($newsTime > $now);
 
-            // Render message template
-            $template = $config['vk_template'] ?? "{title}\n\n{short-story}\n\nЧитать далее: {link}\n\n{tags}";
-            $message = AutopostTemplateEngine::render($template, $news, 'vk', $config);
-
-            // Extract main image if photo sending is enabled
-            $imageUrl = null;
-            if (!empty($config['vk_attach_photo']) && $config['vk_attach_photo'] === '1') {
-                $imageUrl = AutopostMediaHelper::extractMainImage($news, $config);
-            }
-
-            $response = $client->postToWall($message, $imageUrl);
-
-            if ($response['success']) {
-                AutopostLogger::success($newsId, 'vk', (string)($response['post_id'] ?? ''));
-                return true;
-            }
-
-            AutopostLogger::error($newsId, 'vk', $response['error'] ?? 'Unknown VK error');
-            return false;
-        } catch (\Throwable $e) {
-            AutopostLogger::error($newsId, 'vk', 'Exception: ' . $e->getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Verify if the news category is permitted by configuration filter.
-     */
-    public static function isCategoryAllowed(string $categoryIds, array $config): bool
-    {
-        $allowed = trim($config['allowed_categories'] ?? '');
-
-        // If empty, all categories are allowed
-        if (empty($allowed)) {
+        // If not approved or future publication date: queue for CRON
+        if (!$isApproved || $isFuture) {
+            Autopost_Queue::add($newsId, $target);
             return true;
         }
 
-        $allowedList = array_map('trim', explode(',', $allowed));
-        $newsCategories = array_map('trim', explode(',', $categoryIds));
+        // Hybrid mode: attempt immediate dispatch
+        $result = self::publishNews($newsId, $target);
 
-        foreach ($newsCategories as $cat) {
-            if (in_array($cat, $allowedList, true)) {
-                return true;
+        // If immediate dispatch failed, enqueue for background retry
+        if (!$result['success']) {
+            Autopost_Queue::add($newsId, $target);
+        }
+
+        return true;
+    }
+
+    /**
+     * Publish news item to designated target(s)
+     *
+     * @param int    $newsId
+     * @param string $target 'all', 'telegram', or 'vk'
+     * @return array ['success' => bool, 'error' => string|null, 'details' => array]
+     */
+    public static function publishNews($newsId, $target = 'all')
+    {
+        global $db;
+
+        $newsId = intval($newsId);
+        $config = Autopost_Config::get();
+
+        $news = $db->super_query("SELECT * FROM " . PREFIX . "_post WHERE id = '{$newsId}'");
+        if (empty($news['id'])) {
+            return ['success' => false, 'error' => "News ID {$newsId} not found"];
+        }
+
+        // Extract image once for all channels
+        $imageInfo = Autopost_MediaHelper::extractImage($news, $config['xfield_image'] ?? '');
+
+        $errors = [];
+        $successCount = 0;
+        $totalTargets = 0;
+        $details = [];
+
+        // 1. Telegram
+        if (($target === 'all' || $target === 'telegram') && !empty($config['tg_enabled'])) {
+            $totalTargets++;
+            $tgClient = new Autopost_TelegramClient(
+                $config['tg_bot_token'] ?? '',
+                $config['tg_chat_id'] ?? '',
+                [
+                    'enable'  => $config['tg_proxy_enable'] ?? 0,
+                    'type'    => $config['tg_proxy_type'] ?? 'socks5',
+                    'address' => $config['tg_proxy_addr'] ?? '',
+                    'auth'    => $config['tg_proxy_auth'] ?? '',
+                ],
+                $config['tg_api_url'] ?? 'https://api.telegram.org'
+            );
+
+            $tgText = Autopost_TemplateEngine::render(
+                $config['tg_template'] ?? '',
+                $news,
+                'telegram',
+                $config
+            );
+
+            $btnText = !empty($config['tg_btn_enable']) ? ($config['tg_btn_text'] ?? 'Читать на сайте') : null;
+            $btnUrl = !empty($config['tg_btn_enable']) ? Autopost_TemplateEngine::buildNewsUrl($news, 'telegram', $config) : null;
+
+            $tgRes = $tgClient->sendPost($tgText, $imageInfo, $btnText, $btnUrl);
+            $details['telegram'] = $tgRes;
+
+            if ($tgRes['success']) {
+                $successCount++;
+                Autopost_Logger::log($newsId, 'telegram', 'success', $tgRes['message_id'] ?? null);
+            } else {
+                $errMsg = $tgRes['error'] ?? 'Unknown Telegram error';
+                $errors[] = "Telegram: " . $errMsg;
+                Autopost_Logger::log($newsId, 'telegram', 'error', null, $errMsg);
             }
         }
 
-        return false;
+        // 2. VK
+        if (($target === 'all' || $target === 'vk') && !empty($config['vk_enabled'])) {
+            $totalTargets++;
+            $vkClient = new Autopost_VkClient(
+                $config['vk_token'] ?? '',
+                $config['vk_group_id'] ?? '',
+                $config['vk_from_group'] ?? 1,
+                $config['vk_signed'] ?? 0
+            );
+
+            $vkText = Autopost_TemplateEngine::render(
+                $config['vk_template'] ?? '',
+                $news,
+                'vk',
+                $config
+            );
+
+            $linkUrl = Autopost_TemplateEngine::buildNewsUrl($news, 'vk', $config);
+
+            $vkRes = $vkClient->sendPost($vkText, $imageInfo, $linkUrl);
+            $details['vk'] = $vkRes;
+
+            if ($vkRes['success']) {
+                $successCount++;
+                Autopost_Logger::log($newsId, 'vk', 'success', $vkRes['post_id'] ?? null);
+            } else {
+                $errMsg = $vkRes['error'] ?? 'Unknown VK error';
+                $errors[] = "VK: " . $errMsg;
+                Autopost_Logger::log($newsId, 'vk', 'error', null, $errMsg);
+            }
+        }
+
+        $allOk = ($totalTargets > 0 && $successCount === $totalTargets);
+
+        return [
+            'success' => $allOk,
+            'error'   => !empty($errors) ? implode('; ', $errors) : null,
+            'details' => $details
+        ];
+    }
+
+    /**
+     * Check if news category matches allowed categories
+     *
+     * @param string|int $newsCat
+     * @param array      $allowedCats
+     * @return bool
+     */
+    public static function isCategoryAllowed($newsCat, array $allowedCats)
+    {
+        if (empty($allowedCats)) {
+            return true; // No restriction = all categories allowed
+        }
+
+        $newsCatIds = array_map('intval', explode(',', (string)$newsCat));
+        $allowedIds = array_map('intval', $allowedCats);
+
+        return count(array_intersect($newsCatIds, $allowedIds)) > 0;
+    }
+
+    /**
+     * Render checkbox HTML for addnews.php and editnews.php
+     *
+     * @param array|null $newsRow
+     * @param bool       $isEdit
+     * @return string
+     */
+    public static function renderFormCheckboxes($newsRow = null, $isEdit = false)
+    {
+        global $db;
+
+        $config = Autopost_Config::get();
+        if (empty($config['enabled'])) {
+            return '';
+        }
+
+        $newsId = intval($newsRow['id'] ?? 0);
+        $catIds = $newsRow['category'] ?? '';
+        $matchesCat = self::isCategoryAllowed($catIds, $config['categories'] ?? []);
+
+        // Check if already posted
+        $alreadyTg = false;
+        $alreadyVk = false;
+
+        if ($isEdit && $newsId > 0) {
+            $tgLog = $db->super_query("SELECT id FROM " . PREFIX . "_autopost_log WHERE news_id = '{$newsId}' AND channel = 'telegram' AND status = 'success' LIMIT 1");
+            $alreadyTg = !empty($tgLog['id']);
+
+            $vkLog = $db->super_query("SELECT id FROM " . PREFIX . "_autopost_log WHERE news_id = '{$newsId}' AND channel = 'vk' AND status = 'success' LIMIT 1");
+            $alreadyVk = !empty($vkLog['id']);
+        }
+
+        $tgChecked = (!$isEdit && !empty($config['tg_enabled']) && $matchesCat) ? 'checked' : '';
+        $vkChecked = (!$isEdit && !empty($config['vk_enabled']) && $matchesCat) ? 'checked' : '';
+
+        $html = '<div class="panel panel-default" style="margin-top: 15px; border-left: 3px solid #1e88e5;">';
+        $html .= '<div class="panel-heading"><h6 class="panel-title"><i class="fa fa-share-alt"></i> Автопостинг в соцсети</h6></div>';
+        $html .= '<div class="panel-body" style="padding: 10px 15px;">';
+
+        if (!empty($config['tg_enabled'])) {
+            $tgStatusBadge = $alreadyTg ? ' <span class="label label-success" style="font-size:10px;">уже отправлено</span>' : '';
+            $html .= '<div class="checkbox" style="margin-bottom: 5px;">';
+            $html .= '<label><input type="checkbox" name="autopost_tg" value="1" ' . $tgChecked . '> <i class="fa fa-paper-plane" style="color:#0088cc;"></i> Отправить в Telegram-канал' . $tgStatusBadge . '</label>';
+            $html .= '</div>';
+        }
+
+        if (!empty($config['vk_enabled'])) {
+            $vkStatusBadge = $alreadyVk ? ' <span class="label label-success" style="font-size:10px;">уже отправлено</span>' : '';
+            $html .= '<div class="checkbox" style="margin-bottom: 0;">';
+            $html .= '<label><input type="checkbox" name="autopost_vk" value="1" ' . $vkChecked . '> <i class="fa fa-vk" style="color:#4a76a8;"></i> Отправить в группу ВКонтакте' . $vkStatusBadge . '</label>';
+            $html .= '</div>';
+        }
+
+        $html .= '</div></div>';
+
+        return $html;
     }
 }
+
+// Class alias for backward compatibility
+class_alias('Autopost_Main', 'DLE_Autopost');
