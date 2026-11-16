@@ -153,7 +153,7 @@ class Autopost_Main
             );
 
             $btnText = !empty($config['tg_btn_enable']) ? ($config['tg_btn_text'] ?? 'Читать на сайте') : null;
-            $btnUrl = !empty($config['tg_btn_enable']) ? Autopost_TemplateEngine::buildNewsUrl($news, 'telegram', $config) : null;
+            $btnUrl = $btnText ? Autopost_TemplateEngine::buildNewsUrl($news, 'telegram', $config) : null;
 
             $tgRes = $tgClient->sendPost($tgText, $imageInfo, $btnText, $btnUrl);
             $details['telegram'] = $tgRes;
@@ -168,7 +168,7 @@ class Autopost_Main
             }
         }
 
-        // 2. VK
+        // 2. VK (Vkontakte)
         if (($target === 'all' || $target === 'vk') && !empty($config['vk_enabled'])) {
             $totalTargets++;
             $vkClient = new Autopost_VkClient(

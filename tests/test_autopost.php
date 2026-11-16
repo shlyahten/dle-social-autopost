@@ -167,7 +167,8 @@ echo "\n7. Тест целостности манифеста плагина plu
 $xml = simplexml_load_file($repoDir . '/plugin.xml');
 assertTest("Манифест plugin.xml валиден", $xml !== false);
 assertTest("Название плагина корректно", strpos((string)$xml->name, 'DLE Social AutoPost') !== false);
-assertTest("Версия плагина 1.1.0", (string)$xml->version === '1.1.0');
+$currentVersion = (string)$xml->version;
+assertTest("Версия плагина указана корректно ($currentVersion)", preg_match('/^[0-9]+\.[0-9]+(\.[0-9]+)?/', $currentVersion) === 1);
 assertTest("Совместимость с DLE 21.0 указана", strpos((string)$xml->dleversion, '21.0') !== false);
 assertTest("Иконка autopost.png указана", (string)$xml->icon === 'autopost.png');
 assertTest("Тег <filedelete> равен 1 для чистого удаления", (string)$xml->filedelete === '1');
@@ -187,8 +188,9 @@ assertTest("Все файлы из <filelist> присутствуют на ди
 $rawXml = file_get_contents($repoDir . '/plugin.xml');
 assertTest("Хук engine/inc/addnews.php присутствует", strpos($rawXml, 'name="engine/inc/addnews.php"') !== false);
 assertTest("Хук engine/inc/editnews.php присутствует", strpos($rawXml, 'name="engine/inc/editnews.php"') !== false);
+assertTest("Хук editnews.php использует валидный селектор кэша/новостей", strpos($rawXml, 'cprefix') !== false);
 assertTest("Хук engine/modules/cron.php присутствует", strpos($rawXml, 'name="engine/modules/cron.php"') !== false);
-assertTest("Хук engine/ajax/plugins.php присутствует", strpos($rawXml, 'name="engine/ajax/plugins.php"') !== false);
+assertTest("Хук cron.php использует валидный маркер set_vars", strpos($rawXml, 'set_vars( "cron"') !== false);
 
 // 8. Admin Brand Icon
 echo "\n8. Тест иконки плагина:\n";
@@ -221,11 +223,14 @@ assertTest("В исходных текстах отсутствуют терми
 
 // 10. Distribution ZIP Integrity
 echo "\n10. Тест дистрибутивного ZIP-архива:\n";
-$zipPath = $repoDir . '/dist/dle-social-autopost-v1.1.0.zip';
+$zipPath = $repoDir . '/dist/dle-social-autopost-v' . $currentVersion . '.zip';
+if (!file_exists($zipPath)) {
+    $zipPath = $repoDir . '/dist/dle-social-autopost.zip';
+}
 if (file_exists($zipPath)) {
     $zip = new ZipArchive();
     $opened = $zip->open($zipPath);
-    assertTest("Архив dist/dle-social-autopost-v1.1.0.zip открывается", $opened === true);
+    assertTest("Архив dist/" . basename($zipPath) . " открывается", $opened === true);
     if ($opened === true) {
         assertTest("Манифест plugin.xml лежит в корне архива", $zip->locateName('plugin.xml') !== false);
         assertTest("Иконка лежит в engine/skins/images/autopost.png", $zip->locateName('engine/skins/images/autopost.png') !== false);

@@ -145,9 +145,8 @@ class Autopost_TelegramClient
             $chatRes = $this->request('getChat', ['chat_id' => $this->chatId]);
             if (!$chatRes['success']) {
                 return [
-                    'success'      => false,
-                    'bot_username' => $botUsername,
-                    'error'        => 'Chat error: ' . ($chatRes['error'] ?? 'Chat not found or bot is not an administrator')
+                    'success' => false,
+                    'error'   => "Bot @{$botUsername} is valid, but cannot access Chat ID {$this->chatId}: " . ($chatRes['error'] ?? 'Ensure bot is channel administrator')
                 ];
             }
             $chatTitle = $chatRes['result']['title'] ?? ($chatRes['result']['username'] ?? $this->chatId);

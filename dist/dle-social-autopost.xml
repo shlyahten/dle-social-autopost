@@ -3,7 +3,7 @@
 	<name>DLE Social AutoPost (VK &amp; Telegram)</name>
 	<description>Автоматическая публикация пресс-релизов и новостей в Telegram-канал и группу ВКонтакте с поддержкой очередей, кастомного Endpoint API (зеркала / прокси), UTM-меток, CRON и умного поиска изображений.</description>
 	<icon>autopost.png</icon>
-	<version>1.1.0</version>
+	<version>1.1.1</version>
 	<dleversion>13.0-21.0</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl>https://shlyahten.github.io/dle-social-autopost/update.json</upgradeurl>
@@ -33,7 +33,7 @@ cron/autopost.php]]></filelist>
   PRIMARY KEY (`id`),
   KEY `status` (`status`),
   KEY `news_id` (`news_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE={engine} DEFAULT CHARSET={charset};
 
 CREATE TABLE IF NOT EXISTS `{prefix}_autopost_log` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -46,13 +46,16 @@ CREATE TABLE IF NOT EXISTS `{prefix}_autopost_log` (
   PRIMARY KEY (`id`),
   KEY `news_id` (`news_id`),
   KEY `status` (`status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE={engine} DEFAULT CHARSET={charset};
 
 INSERT IGNORE INTO `{prefix}_admin_sections` (`name`, `title`, `descr`, `icon`, `allow_groups`) 
 VALUES ('autopost', 'Автопостинг VK & Telegram', 'Публикация пресс-релизов и новостей в соцсети', 'autopost.png', '1');]]></mysqlinstall>
 	<mysqlupgrade><![CDATA[]]></mysqlupgrade>
 	<mysqlenable><![CDATA[]]></mysqlenable>
 	<mysqldisable><![CDATA[]]></mysqldisable>
+	<mysqldelete><![CDATA[DROP TABLE IF EXISTS `{prefix}_autopost_queue`;
+DROP TABLE IF EXISTS `{prefix}_autopost_log`;
+DELETE FROM `{prefix}_admin_sections` WHERE `name` = 'autopost';]]></mysqldelete>
 	<mysqluninstall><![CDATA[DROP TABLE IF EXISTS `{prefix}_autopost_queue`;
 DROP TABLE IF EXISTS `{prefix}_autopost_log`;
 DELETE FROM `{prefix}_admin_sections` WHERE `name` = 'autopost';]]></mysqluninstall>
@@ -116,9 +119,9 @@ if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
 }]]></replacecode>
 		</operation>
 		<operation action="after">
-			<searchcode><![CDATA[clear_cache( array( 'news_', 'full_' ) );]]></searchcode>
+			<searchcode><![CDATA[if ( $config['allow_alt_url'] AND !$config['seo_type'] ) $cprefix = "full_"; else $cprefix = "full_".$item_db[0];]]></searchcode>
 			<replacecode><![CDATA[
-if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php') && empty($okdeleted)) {
 	require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
 	$autopostEditId = !empty($id) ? $id : (!empty($item_db[0]) ? $item_db[0] : intval($_GET['id'] ?? 0));
 	Autopost_Main::handleNewsSave($autopostEditId, [
@@ -131,18 +134,12 @@ if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
 	</file>
 	<file name="engine/modules/cron.php">
 		<operation action="after">
-			<searchcode><![CDATA[if( $allow_cron ) {]]></searchcode>
+			<searchcode><![CDATA[set_vars( "cron", $cron_data );]]></searchcode>
 			<replacecode><![CDATA[
 	if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
 		require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
 		Autopost_Queue::process(10);
 	}]]></replacecode>
-		</operation>
-	</file>
-	<file name="engine/ajax/plugins.php">
-		<operation action="replace">
-			<searchcode><![CDATA[$response = http_get_contents( $row['upgradeurl'], array(), true );]]></searchcode>
-			<replacecode><![CDATA[$response = http_get_contents( $row['upgradeurl'] );]]></replacecode>
 		</operation>
 	</file>
 </dleplugin>

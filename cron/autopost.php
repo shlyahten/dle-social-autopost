@@ -80,7 +80,7 @@ $cats = $autopostConfig['categories'] ?? [];
 $catWhere = "";
 if (!empty($cats)) {
     $catIds = array_map('intval', $cats);
-    $catWhere = "AND category REGEXP '(^|,)(\" . implode('|', $catIds) . \")(,|$)'";
+    $catWhere = "AND category REGEXP '(^|,)(" . implode('|', $catIds) . ")(,|$)'";
 }
 
 $now = date('Y-m-d H:i:s');

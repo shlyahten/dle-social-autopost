@@ -98,33 +98,6 @@ jobs:
             fi
           fi
 
-      - name: Update GitHub Pages (gh-pages)
-        if: ${{ !inputs.dry_run }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          mkdir -p /tmp/gh_pages_assets
-          cp dist/dle-social-autopost.xml /tmp/gh_pages_assets/
-          cp dist/update.json /tmp/gh_pages_assets/
-          cp docs/index.html /tmp/gh_pages_assets/
-          cp docs/logo.svg /tmp/gh_pages_assets/
-          cp dist/*.zip /tmp/gh_pages_assets/ || true
-          
-          git fetch origin gh-pages
-          git checkout gh-pages
-          
-          cp /tmp/gh_pages_assets/* ./
-          git add index.html logo.svg update.json dle-social-autopost.xml *.zip
-          if ! git diff --staged --quiet; then
-            git commit -m "docs(gh-pages): update release assets for ${{ steps.version_step.outputs.tag }} [skip ci]"
-            git push origin gh-pages
-          else
-            echo "GitHub Pages branch already up to date."
-          fi
-          
-          git checkout main
-
       - name: Publish GitHub Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
@@ -139,3 +112,30 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update GitHub Pages (gh-pages)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          mkdir -p /tmp/gh_pages_assets
+          cp dist/dle-social-autopost.xml /tmp/gh_pages_assets/
+          cp dist/update.json /tmp/gh_pages_assets/
+          cp docs/index.html /tmp/gh_pages_assets/
+          cp docs/logo.svg /tmp/gh_pages_assets/
+          cp dist/*.zip /tmp/gh_pages_assets/ || true
+          
+          git fetch origin gh-pages:remotes/origin/gh-pages || git fetch origin gh-pages
+          git worktree add -B gh-pages /tmp/gh-pages-worktree origin/gh-pages
+          cp /tmp/gh_pages_assets/* /tmp/gh-pages-worktree/
+          cd /tmp/gh-pages-worktree
+          git add index.html logo.svg update.json dle-social-autopost.xml *.zip
+          if ! git diff --staged --quiet; then
+            git commit -m "docs(gh-pages): update release assets for ${{ steps.version_step.outputs.tag }} [skip ci]"
+            git push origin gh-pages
+          else
+            echo "GitHub Pages branch already up to date."
+          fi
+          cd -
+          git worktree remove /tmp/gh-pages-worktree --force || true

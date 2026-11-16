@@ -103,7 +103,7 @@ $updateData = [
     'dle'          => (string)$xml->dleversion,
     'url'          => 'https://shlyahten.github.io/dle-social-autopost/dle-social-autopost.xml',
     'download_zip' => "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost-v{$targetVersion}.zip",
-    'description'  => "Автопостинг новостей в VK и Telegram v{$targetVersion}: поддержка DLE 21.0, кастомный Endpoint API, встроенный тест доступности, обновленный логотип и чистое удаление файлов.",
+    'description'  => "Автопостинг новостей в VK и Telegram v{$targetVersion}: исправление синтаксиса MariaDB, нативные макросы DLE, адаптация хуков editnews/cron и стабильная установка через ZIP.",
 ];
 
 $jsonFormatted = json_encode($updateData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
