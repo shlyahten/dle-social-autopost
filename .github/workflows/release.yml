@@ -53,13 +53,13 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Target version: ${VERSION} (Tag: ${TAG})"
 
-      - name: Run Test Suite
-        run: |
-          php tests/test_autopost.php
-
       - name: Build Package & Sync Versions
         run: |
           php scripts/build.php "${{ steps.version_step.outputs.version }}"
+
+      - name: Run Test Suite
+        run: |
+          php tests/test_autopost.php
 
       - name: Commit & Push Version Bump to main
         if: ${{ !inputs.dry_run }}
