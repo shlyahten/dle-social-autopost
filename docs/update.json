@@ -2,6 +2,6 @@
     "version": "1.1.0",
     "dle": "13.0-21.0",
     "url": "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost.xml",
-    "download_zip": "https://github.com/shlyahten/dle-social-autopost/raw/main/dist/dle-social-autopost-v1.1.0.zip",
+    "download_zip": "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost-v1.1.0.zip",
     "description": "Автопостинг новостей в VK и Telegram v1.1.0: поддержка DLE 21.0, кастомный Endpoint API, встроенный тест доступности, обновленный логотип и чистое удаление файлов."
 }
