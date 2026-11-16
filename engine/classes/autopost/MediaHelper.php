@@ -1,165 +1,179 @@
 <?php
 /**
- * DLE Social AutoPost - Media & Image Extractor
- *
- * Extracts primary image and media URLs from news stories, xfields, or attachments.
+ * DLE Social AutoPost Plugin
+ * Media & Image Extractor Helper
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostMediaHelper
+class Autopost_MediaHelper
 {
     /**
-     * Extract the main image URL for a given news item.
+     * Find main image for news
      *
-     * Priority:
-     * 1. XField image/gallery field (if configured or found)
-     * 2. First <img> tag in short_story or full_story
-     * 3. First [img] BB-code in short_story or full_story
-     * 4. Uploaded DLE attachments image
+     * @param array $newsRow News data from dle_post table
+     * @param string $preferredXfield Name of xfield configured for image
+     * @return array|null Returns ['url' => ..., 'local_path' => ...] or null
      */
-    public static function extractMainImage(array $news, array $config): ?string
+    public static function extractImage(array $newsRow, $preferredXfield = '')
     {
         global $config;
 
-        $siteUrl = rtrim($config['http_home_url'] ?? '', '/');
+        $siteUrl = rtrim($config['http_home_url'], '/') . '/';
 
-        // 1. Check xfields first
-        if (!empty($news['xfields'])) {
-            $xfieldImage = self::findImageInXfields($news['xfields']);
-            if ($xfieldImage) {
-                return self::normalizeImageUrl($xfieldImage, $siteUrl);
-            }
-        }
-
-        // 2. Check HTML / BB tags in short_story
-        $content = ($news['short_story'] ?? '') . ' ' . ($news['full_story'] ?? '');
-
-        // HTML <img> tag
-        if (preg_match('/<img[^>]+src=[\'"]([^\'"]+)[\'"]/i', $content, $matches)) {
-            $url = $matches[1];
-            // Filter out smileys or tiny icons
-            if (!preg_match('/(dleimages|engine\/data\/emoticons)/i', $url)) {
-                return self::normalizeImageUrl($url, $siteUrl);
-            }
-        }
-
-        // DLE BB-code [img]url[/img]
-        if (preg_match('/\[img\](.*?)\[\/img\]/i', $content, $matches)) {
-            return self::normalizeImageUrl(trim($matches[1]), $siteUrl);
-        }
-
-        // DLE BB-code [thumb]url[/thumb]
-        if (preg_match('/\[thumb\](.*?)\[\/thumb\]/i', $content, $matches)) {
-            return self::normalizeImageUrl(trim($matches[1]), $siteUrl);
-        }
-
-        return null;
-    }
-
-    /**
-     * Parse xfields data string and look for image paths.
-     */
-    public static function findImageInXfields(string $xfieldsData): ?string
-    {
-        $fields = explode('||', $xfieldsData);
-        foreach ($fields as $field) {
-            if (empty($field)) {
-                continue;
-            }
-            $parts = explode('|', $field);
-            if (count($parts) >= 2) {
-                $val = trim($parts[1]);
-                // Check if value looks like an image file
-                if (preg_match('/\.(jpg|jpeg|png|webp|gif)$/i', $val)) {
-                    // DLE image fields may store "subfolder/image.jpg" or serialized data
-                    if (str_starts_with($val, '{') || str_starts_with($val, '[')) {
-                        $json = @json_decode($val, true);
-                        if (is_array($json) && !empty($json[0]['image'])) {
-                            return $json[0]['image'];
-                        }
-                    }
-                    return $val;
+        // 1. Check preferred extra field (xfield)
+        if (!empty($preferredXfield) && !empty($newsRow['xfields'])) {
+            $xfieldsData = self::parseXfields($newsRow['xfields']);
+            if (!empty($xfieldsData[$preferredXfield])) {
+                $xfValue = trim($xfieldsData[$preferredXfield]);
+                $imageInfo = self::resolveImage($xfValue, $siteUrl);
+                if ($imageInfo) {
+                    return $imageInfo;
                 }
             }
         }
+
+        // 2. Scan short_story then full_story for images
+        $stories = [
+            $newsRow['short_story'] ?? '',
+            $newsRow['full_story'] ?? ''
+        ];
+
+        foreach ($stories as $content) {
+            if (empty($content)) {
+                continue;
+            }
+
+            // A. DLE specific image comments
+            if (preg_match('/<!--dle_image_begin:(.+?)(?:\|.*?)?-->/is', $content, $m)) {
+                $imageInfo = self::resolveImage(trim($m[1]), $siteUrl);
+                if ($imageInfo) return $imageInfo;
+            }
+
+            // B. DLE thumbnails
+            if (preg_match('/<!--TBegin:(.+?)(?:\|.*?)?-->/is', $content, $m)) {
+                $imageInfo = self::resolveImage(trim($m[1]), $siteUrl);
+                if ($imageInfo) return $imageInfo;
+            }
+
+            // C. HTML <img> tags
+            if (preg_match('/<img[^>]+src=["\']([^"\']+)["\']/is', $content, $m)) {
+                $imageInfo = self::resolveImage(trim($m[1]), $siteUrl);
+                if ($imageInfo) return $imageInfo;
+            }
+
+            // D. BB-codes [img] and [thumb]
+            if (preg_match('/\[(?:img|thumb)\]([^\[]+)\[\/(?:img|thumb)\]/is', $content, $m)) {
+                $imageInfo = self::resolveImage(trim($m[1]), $siteUrl);
+                if ($imageInfo) return $imageInfo;
+            }
+        }
+
         return null;
     }
 
     /**
-     * Ensure the image URL is absolute and properly accessible.
+     * Parse DLE xfields string
+     *
+     * @param string $xfieldsRaw
+     * @return array
      */
-    public static function normalizeImageUrl(string $url, string $siteUrl): string
+    public static function parseXfields($xfieldsRaw)
     {
-        $url = trim($url);
-
-        // Protocol-relative URL
-        if (str_starts_with($url, '//')) {
-            return 'https:' . $url;
+        $result = [];
+        if (empty($xfieldsRaw)) {
+            return $result;
         }
 
-        // Already absolute URL
-        if (preg_match('#^https?://#i', $url)) {
-            return $url;
-        }
-
-        // Relative to root
-        if (str_starts_with($url, '/')) {
-            return $siteUrl . $url;
-        }
-
-        // Relative path inside uploads
-        if (str_starts_with($url, 'uploads/')) {
-            return $siteUrl . '/' . $url;
-        }
-
-        return $siteUrl . '/uploads/posts/' . $url;
-    }
-
-    /**
-     * Download an image to a temporary local file for upload via multipart/form-data.
-     */
-    public static function downloadToTemp(string $imageUrl): ?string
-    {
-        // If image is local on the server filesystem, use local file directly
-        $parsed = parse_url($imageUrl);
-        if ($parsed && !empty($parsed['path'])) {
-            $localPath = ROOT_DIR . $parsed['path'];
-            if (file_exists($localPath) && is_readable($localPath)) {
-                return $localPath;
+        $items = explode('||', $xfieldsRaw);
+        foreach ($items as $item) {
+            $parts = explode('|', $item, 2);
+            if (count($parts) === 2) {
+                $result[$parts[0]] = $parts[1];
             }
         }
 
-        $tmpFile = tempnam(sys_get_temp_dir(), 'autopost_img_');
-        if (!$tmpFile) {
+        return $result;
+    }
+
+    /**
+     * Resolve image path or URL
+     *
+     * @param string $imagePath
+     * @param string $siteUrl
+     * @return array|null
+     */
+    private static function resolveImage($imagePath, $siteUrl)
+    {
+        $imagePath = trim($imagePath);
+        if (empty($imagePath)) {
             return null;
         }
 
-        $ch = curl_init($imageUrl);
-        $fp = fopen($tmpFile, 'wb');
-
-        curl_setopt($ch, CURLOPT_FILE, $fp);
-        curl_setopt($ch, CURLOPT_HEADER, 0);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'DLE-Social-AutoPost/1.0 (+https://dle-news.ru)');
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-
-        $success = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        fclose($fp);
-
-        if (!$success || $httpCode >= 400 || filesize($tmpFile) < 100) {
-            @unlink($tmpFile);
-            return null;
+        // Handle multiple images if comma-separated
+        if (strpos($imagePath, ',') !== false) {
+            $parts = explode(',', $imagePath);
+            $imagePath = trim($parts[0]);
         }
 
-        return $tmpFile;
+        // Clean quotes/spaces
+        $imagePath = str_replace(['"', "'", "\r", "\n"], '', $imagePath);
+
+        // Check if full URL
+        if (preg_match('~^https?://~i', $imagePath)) {
+            $url = $imagePath;
+            // Check if it belongs to local server
+            $localPath = null;
+            if (strpos($url, $siteUrl) === 0) {
+                $rel = substr($url, strlen($siteUrl));
+                $candidate = ROOT_DIR . '/' . ltrim($rel, '/');
+                if (file_exists($candidate) && is_readable($candidate)) {
+                    $localPath = $candidate;
+                }
+            }
+            return [
+                'url'        => $url,
+                'local_path' => $localPath
+            ];
+        }
+
+        // Check absolute path relative to domain root: /uploads/...
+        if (strpos($imagePath, '/') === 0) {
+            $candidate = ROOT_DIR . $imagePath;
+            $url = rtrim($siteUrl, '/') . $imagePath;
+            return [
+                'url'        => $url,
+                'local_path' => (file_exists($candidate) && is_readable($candidate)) ? $candidate : null
+            ];
+        }
+
+        // Relative path inside uploads/posts/
+        $candidateInUploads = ROOT_DIR . '/uploads/posts/' . $imagePath;
+        if (file_exists($candidateInUploads) && is_readable($candidateInUploads)) {
+            return [
+                'url'        => $siteUrl . 'uploads/posts/' . $imagePath,
+                'local_path' => $candidateInUploads
+            ];
+        }
+
+        // General relative path
+        $candidateRoot = ROOT_DIR . '/' . $imagePath;
+        if (file_exists($candidateRoot) && is_readable($candidateRoot)) {
+            return [
+                'url'        => $siteUrl . $imagePath,
+                'local_path' => $candidateRoot
+            ];
+        }
+
+        return [
+            'url'        => $siteUrl . $imagePath,
+            'local_path' => null
+        ];
     }
 }

@@ -1,101 +1,95 @@
 <?php
 /**
- * DLE Social AutoPost - Audit & Debug Logger
- *
- * Logs successful sends, retries, and errors to the database and PHP error log.
+ * DLE Social AutoPost Plugin
+ * Database Logger
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostLogger
+class Autopost_Logger
 {
-    public const STATUS_SUCCESS = 'success';
-    public const STATUS_ERROR   = 'error';
-    public const STATUS_SKIPPED = 'skipped';
-
     /**
-     * Record an autopost attempt in the database log.
+     * Add log record
+     *
+     * @param int         $newsId
+     * @param string      $channel 'telegram' or 'vk'
+     * @param string      $status 'success' or 'error'
+     * @param string|null $remoteId ID of post or message
+     * @param string|null $errorMessage
+     * @return bool
      */
-    public static function log(
-        int $newsId,
-        string $channel,
-        string $status,
-        ?string $remoteId = null,
-        ?string $errorMessage = null,
-        ?array $context = null
-    ): void {
-        global $db;
-
-        if (!$db) {
-            return;
-        }
-
-        $newsId = (int)$newsId;
-        $channel = $db->safesql(substr($channel, 0, 32));
-        $status = $db->safesql(substr($status, 0, 16));
-        $remoteId = $remoteId !== null ? "'" . $db->safesql(substr($remoteId, 0, 128)) . "'" : "NULL";
-        $errorMessage = $errorMessage !== null ? "'" . $db->safesql(substr($errorMessage, 0, 1000)) . "'" : "NULL";
-
-        $db->query(
-            "INSERT INTO " . PREFIX . "_autopost_log 
-            (news_id, channel, remote_id, status, error_message, post_date) 
-            VALUES 
-            ({$newsId}, '{$channel}', {$remoteId}, '{$status}', {$errorMessage}, NOW())"
-        );
-
-        // Auto-clean old logs if table grows too large
-        self::trimLogs();
-    }
-
-    /**
-     * Helper to log an error.
-     */
-    public static function error(int $newsId, string $channel, string $errorMessage, ?array $context = null): void
-    {
-        self::log($newsId, $channel, self::STATUS_ERROR, null, $errorMessage, $context);
-    }
-
-    /**
-     * Helper to log success.
-     */
-    public static function success(int $newsId, string $channel, ?string $remoteId = null, ?array $context = null): void
-    {
-        self::log($newsId, $channel, self::STATUS_SUCCESS, $remoteId, null, $context);
-    }
-
-    /**
-     * Get recent logs for admin panel display.
-     */
-    public static function getRecent(int $limit = 100, int $offset = 0, ?string $statusFilter = null): array
+    public static function log($newsId, $channel, $status, $remoteId = null, $errorMessage = null)
     {
         global $db;
 
-        if (!$db) {
-            return [];
+        $newsId = intval($newsId);
+        $channel = in_array($channel, ['telegram', 'vk']) ? $channel : 'telegram';
+        $status = ($status === 'success') ? 'success' : 'error';
+        $remoteId = $remoteId ? $db->safesql(substr((string)$remoteId, 0, 100)) : null;
+        $errorMessage = $errorMessage ? $db->safesql($errorMessage) : null;
+        $now = date('Y-m-d H:i:s');
+
+        $remoteIdSql = $remoteId ? "'{$remoteId}'" : "NULL";
+        $errorSql = $errorMessage ? "'{$errorMessage}'" : "NULL";
+
+        $sql = "INSERT INTO " . PREFIX . "_autopost_log 
+                (`news_id`, `channel`, `remote_id`, `status`, `error_message`, `post_date`) 
+                VALUES ('{$newsId}', '{$channel}', {$remoteIdSql}, '{$status}', {$errorSql}, '{$now}')";
+
+        $db->query($sql);
+
+        // Periodically trim old logs to avoid table bloat
+        if (mt_rand(1, 20) === 1) {
+            $config = Autopost_Config::get();
+            $limit = intval($config['log_limit'] ?? 500);
+            self::trim($limit);
         }
 
-        $limit = max(1, min(500, (int)$limit));
-        $offset = max(0, (int)$offset);
+        return true;
+    }
 
-        $where = "1=1";
-        if ($statusFilter && in_array($statusFilter, [self::STATUS_SUCCESS, self::STATUS_ERROR, self::STATUS_SKIPPED], true)) {
-            $where .= " AND l.status = '" . $db->safesql($statusFilter) . "'";
+    /**
+     * Get logs with pagination and optional filters
+     *
+     * @param int $limit
+     * @param int $offset
+     * @param string|null $channel
+     * @param string|null $status
+     * @return array
+     */
+    public static function getLogs($limit = 30, $offset = 0, $channel = null, $status = null)
+    {
+        global $db;
+
+        $where = [];
+        if ($channel && in_array($channel, ['telegram', 'vk'])) {
+            $where[] = "`l`.`channel` = '" . $db->safesql($channel) . "'";
+        }
+        if ($status && in_array($status, ['success', 'error'])) {
+            $where[] = "`l`.`status` = '" . $db->safesql($status) . "'";
         }
 
-        $query = "SELECT l.*, p.title as news_title 
-                  FROM " . PREFIX . "_autopost_log l 
-                  LEFT JOIN " . PREFIX . "_post p ON p.id = l.news_id 
-                  WHERE {$where} 
-                  ORDER BY l.id DESC 
-                  LIMIT {$offset}, {$limit}";
+        $whereClause = !empty($where) ? "WHERE " . implode(' AND ', $where) : "";
 
-        $result = $db->query($query);
+        $limit = intval($limit);
+        $offset = intval($offset);
+
+        $sql = "SELECT l.*, p.title as news_title 
+                FROM " . PREFIX . "_autopost_log l 
+                LEFT JOIN " . PREFIX . "_post p ON l.news_id = p.id 
+                {$whereClause} 
+                ORDER BY l.id DESC 
+                LIMIT {$offset}, {$limit}";
+
         $rows = [];
-        while ($row = $db->get_row($result)) {
+        $res = $db->query($sql);
+        while ($row = $db->get_row($res)) {
             $rows[] = $row;
         }
 
@@ -103,64 +97,53 @@ class AutopostLogger
     }
 
     /**
-     * Count total log entries.
+     * Count total log entries
+     *
+     * @param string|null $channel
+     * @param string|null $status
+     * @return int
      */
-    public static function countTotal(?string $statusFilter = null): int
+    public static function countLogs($channel = null, $status = null)
     {
         global $db;
 
-        if (!$db) {
-            return 0;
+        $where = [];
+        if ($channel && in_array($channel, ['telegram', 'vk'])) {
+            $where[] = "`channel` = '" . $db->safesql($channel) . "'";
+        }
+        if ($status && in_array($status, ['success', 'error'])) {
+            $where[] = "`status` = '" . $db->safesql($status) . "'";
         }
 
-        $where = "1=1";
-        if ($statusFilter && in_array($statusFilter, [self::STATUS_SUCCESS, self::STATUS_ERROR, self::STATUS_SKIPPED], true)) {
-            $where .= " AND status = '" . $db->safesql($statusFilter) . "'";
-        }
+        $whereClause = !empty($where) ? "WHERE " . implode(' AND ', $where) : "";
+        $row = $db->super_query("SELECT COUNT(*) as count FROM " . PREFIX . "_autopost_log {$whereClause}");
 
-        $row = $db->super_query("SELECT COUNT(*) as total FROM " . PREFIX . "_autopost_log WHERE {$where}");
-        return (int)($row['total'] ?? 0);
+        return intval($row['count'] ?? 0);
     }
 
     /**
-     * Clear all log records.
+     * Delete old logs, keeping the most recent $keepCount records
+     *
+     * @param int $keepCount
      */
-    public static function clear(): void
+    public static function trim($keepCount = 500)
     {
         global $db;
-        if ($db) {
-            $db->query("TRUNCATE TABLE " . PREFIX . "_autopost_log");
+
+        $keepCount = max(50, intval($keepCount));
+        $row = $db->super_query("SELECT id FROM " . PREFIX . "_autopost_log ORDER BY id DESC LIMIT {$keepCount}, 1");
+        if (!empty($row['id'])) {
+            $cutoffId = intval($row['id']);
+            $db->query("DELETE FROM " . PREFIX . "_autopost_log WHERE id <= {$cutoffId}");
         }
     }
 
     /**
-     * Trim logs to the configured max limit to avoid table bloat.
+     * Clear all logs
      */
-    private static function trimLogs(): void
+    public static function clear()
     {
         global $db;
-
-        if (!$db) {
-            return;
-        }
-
-        // Randomly execute 1 in 20 requests
-        if (random_int(1, 20) !== 1) {
-            return;
-        }
-
-        $limit = (int)AutopostConfig::get('log_limit', 500);
-        if ($limit <= 0) {
-            $limit = 500;
-        }
-
-        $db->query(
-            "DELETE FROM " . PREFIX . "_autopost_log 
-             WHERE id NOT IN (
-                 SELECT id FROM (
-                     SELECT id FROM " . PREFIX . "_autopost_log ORDER BY id DESC LIMIT {$limit}
-                 ) AS tmp
-             )"
-        );
+        $db->query("TRUNCATE TABLE " . PREFIX . "_autopost_log");
     }
 }

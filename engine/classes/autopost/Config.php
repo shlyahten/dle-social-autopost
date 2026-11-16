@@ -1,105 +1,87 @@
 <?php
 /**
- * DLE Social AutoPost - Configuration Manager
- *
- * Manages plugin configuration stored in engine/data/autopost.php.
+ * DLE Social AutoPost Plugin
+ * Configuration Manager
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostConfig
+class Autopost_Config
 {
-    private static ?array $config = null;
-    private static string $configFile = ENGINE_DIR . '/data/autopost.php';
+    private static $configFile = ENGINE_DIR . '/data/autopost.php';
+    private static $config = null;
 
     /**
-     * Default configuration options.
+     * Get default settings
+     *
+     * @return array
      */
-    public static function defaults(): array
+    public static function getDefaults()
     {
         return [
-            // General
-            'enable' => '1',
-            'cron_key' => bin2hex(random_bytes(16)),
-            'log_limit' => '500',
+            'enabled'            => 1,
+            'categories'         => [], // empty = all categories
+            'xfield_image'       => '', // e.g. 'image', 'poster'
+            
+            // Telegram settings
+            'tg_enabled'         => 0,
+            'tg_bot_token'       => '',
+            'tg_chat_id'         => '',
+            'tg_api_url'         => 'https://api.telegram.org', // custom reverse-proxy / mirror for TSPU bypass
+            'tg_parse_mode'      => 'HTML', // HTML or Markdown
+            'tg_template'        => "<b>{title}</b>\n\n{short-story}\n\n{tags}",
+            'tg_btn_enable'      => 1,
+            'tg_btn_text'        => 'Читать на сайте',
+            'tg_proxy_enable'    => 0,
+            'tg_proxy_type'      => 'socks5', // socks5 or http
+            'tg_proxy_addr'      => '',
+            'tg_proxy_auth'      => '',
 
-            // Telegram
-            'tg_enable' => '0',
-            'tg_bot_token' => '',
-            'tg_channel_id' => '',
-            'tg_api_url' => 'https://api.telegram.org', // Custom Bot API endpoint / mirror / TSPU bypass
-            'tg_template' => "<b>{title}</b>\n\n{short-story}\n\n{tags}",
-            'tg_send_photo' => '1',
-            'tg_inline_button' => '1',
-            'tg_button_text' => 'Читать на сайте',
-            'tg_disable_web_page_preview' => '0',
-            'tg_disable_notification' => '0',
+            // VK settings
+            'vk_enabled'         => 0,
+            'vk_token'           => '',
+            'vk_group_id'        => '',
+            'vk_template'        => "{title}\n\n{short-story}\n\n{link}\n\n{tags}",
+            'vk_from_group'      => 1,
+            'vk_signed'          => 0,
 
-            // Telegram Proxy (optional for blocked servers)
-            'tg_proxy_enable' => '0',
-            'tg_proxy_type' => 'CURLPROXY_SOCKS5', // CURLPROXY_HTTP or CURLPROXY_SOCKS5
-            'tg_proxy_address' => '',
-            'tg_proxy_auth' => '',
+            // UTM tracking
+            'utm_enable'         => 1,
+            'utm_source_tg'      => 'telegram',
+            'utm_medium_tg'      => 'channel',
+            'utm_campaign_tg'    => 'press_release',
+            'utm_source_vk'      => 'vk',
+            'utm_medium_vk'      => 'wall',
+            'utm_campaign_vk'    => 'press_release',
 
-            // VK
-            'vk_enable' => '0',
-            'vk_access_token' => '',
-            'vk_owner_id' => '', // negative ID for community (e.g. -12345678)
-            'vk_from_group' => '1',
-            'vk_signed' => '0',
-            'vk_template' => "{title}\n\n{short-story}\n\nЧитать далее: {link}\n\n{tags}",
-            'vk_attach_photo' => '1',
-
-            // Filtering
-            'allowed_categories' => '', // Comma-separated category IDs or empty for all
-            'auto_tags_to_hashtags' => '1',
-            'utm_enable' => '1',
-            'utm_source' => '{channel}', // replaced with 'telegram' or 'vk'
-            'utm_medium' => 'social',
-            'utm_campaign' => 'autopost',
+            // Queue & Cron
+            'max_retries'        => 3,
+            'cron_key'           => md5(uniqid(mt_rand(), true)),
+            'log_limit'          => 500,
         ];
     }
 
     /**
-     * Get single configuration value or entire config array.
+     * Load settings with defaults
+     *
+     * @return array
      */
-    public static function get(?string $key = null, mixed $default = null): mixed
+    public static function get()
     {
-        if (self::$config === null) {
-            self::load();
-        }
-
-        if ($key === null) {
+        if (self::$config !== null) {
             return self::$config;
         }
 
-        return self::$config[$key] ?? $default;
-    }
-
-    /**
-     * Set a single configuration value in-memory.
-     */
-    public static function set(string $key, mixed $value): void
-    {
-        if (self::$config === null) {
-            self::load();
-        }
-        self::$config[$key] = $value;
-    }
-
-    /**
-     * Load configuration from file, falling back to defaults.
-     */
-    public static function load(): array
-    {
-        $defaults = self::defaults();
+        $defaults = self::getDefaults();
 
         if (file_exists(self::$configFile)) {
-            $saved = @include self::$configFile;
+            $saved = @include(self::$configFile);
             if (is_array($saved)) {
                 self::$config = array_merge($defaults, $saved);
                 return self::$config;
@@ -111,28 +93,28 @@ class AutopostConfig
     }
 
     /**
-     * Save current configuration to file with atomic write.
+     * Save settings to engine/data/autopost.php
+     *
+     * @param array $newSettings
+     * @return bool
      */
-    public static function save(?array $data = null): bool
+    public static function save(array $newSettings)
     {
-        if ($data !== null) {
-            $current = self::load();
-            self::$config = array_merge($current, $data);
+        $current = self::get();
+        $merged = array_merge($current, $newSettings);
+
+        $content = "<?php\n\n";
+        $content .= "// DLE Social AutoPost Configuration\n";
+        $content .= "// Auto-generated on " . date('Y-m-d H:i:s') . "\n\n";
+        $content .= "return " . var_export($merged, true) . ";\n";
+
+        $result = @file_put_contents(self::$configFile, $content, LOCK_EX);
+        if ($result !== false) {
+            @chmod(self::$configFile, 0666);
+            self::$config = $merged;
+            return true;
         }
 
-        if (self::$config === null) {
-            self::$config = self::defaults();
-        }
-
-        $exported = var_export(self::$config, true);
-        $content = "<?php\n\n// DLE Social AutoPost Configuration\n// Auto-generated: " . date('Y-m-d H:i:s') . "\n\nreturn " . $exported . ";\n";
-
-        $tempFile = self::$configFile . '.' . uniqid('tmp_', true);
-        if (@file_put_contents($tempFile, $content) === false) {
-            return false;
-        }
-
-        @chmod($tempFile, 0666);
-        return @rename($tempFile, self::$configFile);
+        return false;
     }
 }

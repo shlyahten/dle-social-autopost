@@ -1,218 +1,234 @@
 <?php
 /**
- * DLE Social AutoPost - Asynchronous Queue Manager
- *
- * Handles delayed publishing, retries on network failures, and batch execution.
+ * DLE Social AutoPost Plugin
+ * Queue Manager & Processor
+ * 
+ * @package    DLE_Autopost
+ * @author     Antigravity / Google DeepMind
+ * @version    1.0.0
  */
 
 if (!defined('DATALIFEENGINE')) {
-    header('HTTP/1.1 403 Forbidden');
-    header('Location: ../../');
     die('Hacking attempt!');
 }
 
-class AutopostQueue
+class Autopost_Queue
 {
-    public const STATUS_PENDING    = 'pending';
-    public const STATUS_PROCESSING = 'processing';
-    public const STATUS_FAILED     = 'failed';
-    public const STATUS_DONE       = 'done';
-
-    public const MAX_ATTEMPTS = 5;
-
     /**
-     * Add a task to the queue.
+     * Add news to publication queue
+     *
+     * @param int    $newsId
+     * @param string $target 'all', 'telegram', or 'vk'
+     * @return int|bool Queue ID or false
      */
-    public static function enqueue(int $newsId, string $target = 'all'): int
+    public static function add($newsId, $target = 'all')
     {
         global $db;
 
-        if (!$db) {
-            return 0;
-        }
-
-        $newsId = (int)$newsId;
-        $target = $db->safesql(in_array($target, ['all', 'telegram', 'vk'], true) ? $target : 'all');
-
-        // Check if an unprocessed task for this news & target already exists
-        $existing = $db->super_query(
-            "SELECT id FROM " . PREFIX . "_autopost_queue 
-             WHERE news_id = {$newsId} AND target = '{$target}' AND status IN ('pending', 'processing') 
-             LIMIT 1"
-        );
-
-        if (!empty($existing['id'])) {
-            return (int)$existing['id'];
-        }
-
-        $db->query(
-            "INSERT INTO " . PREFIX . "_autopost_queue 
-             (news_id, target, status, attempts, created_at, updated_at) 
-             VALUES 
-             ({$newsId}, '{$target}', 'pending', 0, NOW(), NOW())"
-        );
-
-        return (int)$db->insert_id();
-    }
-
-    /**
-     * Process pending tasks from the queue.
-     * Called by CRON or background worker.
-     */
-    public static function processPending(int $limit = 10): array
-    {
-        global $db;
-
-        if (!$db) {
-            return ['processed' => 0, 'succeeded' => 0, 'failed' => 0];
-        }
-
-        $limit = max(1, min(50, (int)$limit));
+        $newsId = intval($newsId);
+        $target = in_array($target, ['telegram', 'vk', 'all']) ? $target : 'all';
         $now = date('Y-m-d H:i:s');
 
-        // Select pending or retriable failed tasks
-        $tasksQuery = $db->query(
-            "SELECT * FROM " . PREFIX . "_autopost_queue 
-             WHERE status = 'pending' OR (status = 'failed' AND attempts < " . self::MAX_ATTEMPTS . " AND updated_at <= DATE_SUB(NOW(), INTERVAL 5 MINUTE)) 
-             ORDER BY id ASC 
-             LIMIT {$limit}"
-        );
-
-        $results = ['processed' => 0, 'succeeded' => 0, 'failed' => 0];
-        $tasks = [];
-        while ($task = $db->get_row($tasksQuery)) {
-            $tasks[] = $task;
+        // Check if pending task already exists for this news and target
+        $existing = $db->super_query("SELECT id FROM " . PREFIX . "_autopost_queue 
+                                      WHERE news_id = '{$newsId}' 
+                                      AND target = '{$target}' 
+                                      AND status IN ('pending', 'processing')");
+        if (!empty($existing['id'])) {
+            return intval($existing['id']);
         }
 
-        require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+        $sql = "INSERT INTO " . PREFIX . "_autopost_queue 
+                (`news_id`, `target`, `status`, `attempts`, `error_message`, `created_at`, `updated_at`) 
+                VALUES ('{$newsId}', '{$target}', 'pending', 0, NULL, '{$now}', '{$now}')";
 
-        foreach ($tasks as $task) {
-            $taskId = (int)$task['id'];
-            $newsId = (int)$task['news_id'];
+        $db->query($sql);
+        return $db->insert_id();
+    }
+
+    /**
+     * Process pending queue tasks
+     *
+     * @param int $batchSize Number of items to process in one run
+     * @return array Summary of processed items
+     */
+    public static function process($batchSize = 10)
+    {
+        global $db;
+
+        $batchSize = max(1, intval($batchSize));
+        $config = Autopost_Config::get();
+        $maxRetries = intval($config['max_retries'] ?? 3);
+
+        // Fetch pending items
+        $sql = "SELECT * FROM " . PREFIX . "_autopost_queue 
+                WHERE status = 'pending' 
+                AND attempts < {$maxRetries} 
+                ORDER BY id ASC 
+                LIMIT {$batchSize}";
+
+        $res = $db->query($sql);
+        $processed = 0;
+        $succeeded = 0;
+        $failed = 0;
+
+        while ($task = $db->get_row($res)) {
+            $taskId = intval($task['id']);
+            $newsId = intval($task['news_id']);
             $target = $task['target'];
-            $attempts = (int)$task['attempts'] + 1;
+            $attempts = intval($task['attempts']) + 1;
+            $now = date('Y-m-d H:i:s');
 
-            // Mark task as processing
-            $db->query("UPDATE " . PREFIX . "_autopost_queue SET status = 'processing', attempts = {$attempts}, updated_at = NOW() WHERE id = {$taskId}");
-            $results['processed']++;
+            // Mark as processing
+            $db->query("UPDATE " . PREFIX . "_autopost_queue 
+                        SET status = 'processing', attempts = '{$attempts}', updated_at = '{$now}' 
+                        WHERE id = '{$taskId}'");
 
-            try {
-                $success = AutopostDispatcher::publishNewsId($newsId, $target);
+            // Dispatch task
+            $result = Autopost_Main::publishNews($newsId, $target);
+            $processed++;
 
-                if ($success) {
-                    $db->query("UPDATE " . PREFIX . "_autopost_queue SET status = 'done', updated_at = NOW() WHERE id = {$taskId}");
-                    $results['succeeded']++;
-                } else {
-                    $db->query("UPDATE " . PREFIX . "_autopost_queue SET status = 'failed', error_message = 'Failed to publish to all targets', updated_at = NOW() WHERE id = {$taskId}");
-                    $results['failed']++;
-                }
-            } catch (\Throwable $e) {
-                $error = $db->safesql(substr($e->getMessage(), 0, 500));
-                $db->query("UPDATE " . PREFIX . "_autopost_queue SET status = 'failed', error_message = '{$error}', updated_at = NOW() WHERE id = {$taskId}");
-                $results['failed']++;
+            if ($result['success']) {
+                $succeeded++;
+                $db->query("UPDATE " . PREFIX . "_autopost_queue 
+                            SET status = 'done', error_message = NULL, updated_at = '{$now}' 
+                            WHERE id = '{$taskId}'");
+            } else {
+                $failed++;
+                $errorMsg = $db->safesql(substr($result['error'] ?? 'Unknown error', 0, 500));
+                $newStatus = ($attempts >= $maxRetries) ? 'failed' : 'pending';
+
+                $db->query("UPDATE " . PREFIX . "_autopost_queue 
+                            SET status = '{$newStatus}', error_message = '{$errorMsg}', updated_at = '{$now}' 
+                            WHERE id = '{$taskId}'");
             }
         }
 
-        return $results;
+        return [
+            'processed' => $processed,
+            'succeeded' => $succeeded,
+            'failed'    => $failed
+        ];
     }
 
     /**
-     * Check if a news item has already been successfully published.
+     * Retry failed or pending task immediately
+     *
+     * @param int $taskId
+     * @return array
      */
-    public static function isAlreadyPublished(int $newsId, string $channel): bool
+    public static function retry($taskId)
     {
         global $db;
 
-        if (!$db) {
-            return false;
+        $taskId = intval($taskId);
+        $task = $db->super_query("SELECT * FROM " . PREFIX . "_autopost_queue WHERE id = '{$taskId}'");
+
+        if (empty($task['id'])) {
+            return ['success' => false, 'error' => 'Queue task not found'];
         }
 
-        $newsId = (int)$newsId;
-        $channel = $db->safesql($channel);
+        $newsId = intval($task['news_id']);
+        $target = $task['target'];
+        $now = date('Y-m-d H:i:s');
 
-        $check = $db->super_query(
-            "SELECT id FROM " . PREFIX . "_autopost_log 
-             WHERE news_id = {$newsId} AND channel = '{$channel}' AND status = 'success' 
-             LIMIT 1"
-        );
+        $result = Autopost_Main::publishNews($newsId, $target);
 
-        return !empty($check['id']);
+        if ($result['success']) {
+            $db->query("UPDATE " . PREFIX . "_autopost_queue 
+                        SET status = 'done', error_message = NULL, updated_at = '{$now}' 
+                        WHERE id = '{$taskId}'");
+        } else {
+            $errorMsg = $db->safesql(substr($result['error'] ?? 'Unknown error', 0, 500));
+            $db->query("UPDATE " . PREFIX . "_autopost_queue 
+                        SET status = 'failed', error_message = '{$errorMsg}', updated_at = '{$now}' 
+                        WHERE id = '{$taskId}'");
+        }
+
+        return $result;
     }
 
     /**
-     * Get queue statistics for admin dashboard.
+     * Delete queue task
+     *
+     * @param int $taskId
+     * @return bool
      */
-    public static function getStats(): array
+    public static function delete($taskId)
     {
         global $db;
-
-        if (!$db) {
-            return ['pending' => 0, 'processing' => 0, 'failed' => 0, 'done' => 0, 'total' => 0];
-        }
-
-        $res = $db->query("SELECT status, COUNT(*) as cnt FROM " . PREFIX . "_autopost_queue GROUP BY status");
-        $stats = ['pending' => 0, 'processing' => 0, 'failed' => 0, 'done' => 0, 'total' => 0];
-
-        while ($row = $db->get_row($res)) {
-            $status = $row['status'];
-            $cnt = (int)$row['cnt'];
-            if (isset($stats[$status])) {
-                $stats[$status] = $cnt;
-            }
-            $stats['total'] += $cnt;
-        }
-
-        return $stats;
+        $taskId = intval($taskId);
+        $db->query("DELETE FROM " . PREFIX . "_autopost_queue WHERE id = '{$taskId}'");
+        return true;
     }
 
     /**
-     * Get queue tasks list for admin.
+     * Clear finished / failed tasks
+     *
+     * @param string $status 'done', 'failed', or 'all'
      */
-    public static function getTasks(int $limit = 50, int $offset = 0): array
+    public static function clear($status = 'done')
     {
         global $db;
-
-        if (!$db) {
-            return [];
-        }
-
-        $limit = max(1, min(200, (int)$limit));
-        $offset = max(0, (int)$offset);
-
-        $query = "SELECT q.*, p.title as news_title 
-                  FROM " . PREFIX . "_autopost_queue q 
-                  LEFT JOIN " . PREFIX . "_post p ON p.id = q.news_id 
-                  ORDER BY q.id DESC 
-                  LIMIT {$offset}, {$limit}";
-
-        $result = $db->query($query);
-        $tasks = [];
-        while ($row = $db->get_row($result)) {
-            $tasks[] = $row;
-        }
-
-        return $tasks;
-    }
-
-    /**
-     * Delete a single task from queue.
-     */
-    public static function deleteTask(int $taskId): void
-    {
-        global $db;
-        if ($db) {
-            $db->query("DELETE FROM " . PREFIX . "_autopost_queue WHERE id = " . (int)$taskId);
-        }
-    }
-
-    /**
-     * Clear all tasks from queue.
-     */
-    public static function clearAll(): void
-    {
-        global $db;
-        if ($db) {
+        if ($status === 'all') {
             $db->query("TRUNCATE TABLE " . PREFIX . "_autopost_queue");
+        } elseif (in_array($status, ['done', 'failed'])) {
+            $db->query("DELETE FROM " . PREFIX . "_autopost_queue WHERE status = '{$status}'");
         }
+    }
+
+    /**
+     * Get queue list with pagination
+     *
+     * @param int $limit
+     * @param int $offset
+     * @param string|null $status
+     * @return array
+     */
+    public static function getList($limit = 30, $offset = 0, $status = null)
+    {
+        global $db;
+
+        $where = "";
+        if ($status && in_array($status, ['pending', 'processing', 'failed', 'done'])) {
+            $where = "WHERE q.status = '" . $db->safesql($status) . "'";
+        }
+
+        $limit = intval($limit);
+        $offset = intval($offset);
+
+        $sql = "SELECT q.*, p.title as news_title 
+                FROM " . PREFIX . "_autopost_queue q 
+                LEFT JOIN " . PREFIX . "_post p ON q.news_id = p.id 
+                {$where} 
+                ORDER BY q.id DESC 
+                LIMIT {$offset}, {$limit}";
+
+        $rows = [];
+        $res = $db->query($sql);
+        while ($row = $db->get_row($res)) {
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Count queue items
+     *
+     * @param string|null $status
+     * @return int
+     */
+    public static function count($status = null)
+    {
+        global $db;
+
+        $where = "";
+        if ($status && in_array($status, ['pending', 'processing', 'failed', 'done'])) {
+            $where = "WHERE status = '" . $db->safesql($status) . "'";
+        }
+
+        $row = $db->super_query("SELECT COUNT(*) as count FROM " . PREFIX . "_autopost_queue {$where}");
+        return intval($row['count'] ?? 0);
     }
 }
