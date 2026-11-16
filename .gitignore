@@ -17,3 +17,6 @@ engine/data/autopost.php
 # Temp files
 /tmp/
 *.tmp
+
+# Build artifacts
+*.zip

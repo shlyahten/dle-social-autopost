@@ -49,6 +49,52 @@
 
 ---
 
+## 📸 Интерфейс панели управления (Светлая и тёмная темы)
+
+Модуль управления плагином полностью адаптирован под современные стандарты верстки DataLife Engine (DLE 13.0 – 21.0), поддерживает нативные переключатели (Switchery), адаптивную табличную сетку DLE и автоматическую смену **светлой** и **тёмной** тем оформления с соблюдением контрастности WCAG 2.1 AA.
+
+<details open>
+<summary><b>1. Настройки плагина (Основные параметры, Telegram, ВКонтакте, UTM, CRON)</b></summary>
+<br>
+
+| Светлая тема | Тёмная тема |
+|:---:|:---:|
+| ![Настройки — Светлая тема](docs/images/screenshots/01_settings_light.png) | ![Настройки — Тёмная тема](docs/images/screenshots/01_settings_dark.png) |
+
+</details>
+
+<details open>
+<summary><b>2. Сетевая диагностика доступности Endpoint Telegram и интерактивные тесты</b></summary>
+<br>
+
+| Светлая тема | Тёмная тема |
+|:---:|:---:|
+| ![Диагностика — Светлая тема](docs/images/screenshots/04_diagnostics_light.png) | ![Диагностика — Тёмная тема](docs/images/screenshots/04_diagnostics_dark.png) |
+
+</details>
+
+<details>
+<summary><b>3. Очередь задач (Queue) и статусы отправки</b></summary>
+<br>
+
+| Светлая тема | Тёмная тема |
+|:---:|:---:|
+| ![Очередь — Светлая тема](docs/images/screenshots/02_queue_light.png) | ![Очередь — Тёмная тема](docs/images/screenshots/02_queue_dark.png) |
+
+</details>
+
+<details>
+<summary><b>4. Журнал публикаций (Logs) и история ответов API</b></summary>
+<br>
+
+| Светлая тема | Тёмная тема |
+|:---:|:---:|
+| ![Журнал — Светлая тема](docs/images/screenshots/03_logs_light.png) | ![Журнал — Тёмная тема](docs/images/screenshots/03_logs_dark.png) |
+
+</details>
+
+---
+
 ## 📂 Структура репозитория
 
 ```text
@@ -60,14 +106,17 @@ publisher-plugin/
 ├── scripts/
 │   └── build.php                      # Релизный сборщик и валидатор пакетов (PHP CLI)
 ├── tests/
-│   └── test_autopost.php              # Автоматический тестовый набор (45 тестов)
+│   └── test_autopost.php              # Автоматический тестовый набор (46 тестов)
 ├── build.sh                           # Shell-обертка запуска сборки
 ├── plugin.xml                         # Манифест плагина для системы плагинов DLE
 ├── dist/                              # Готовые дистрибутивы для установки
 │   ├── dle-social-autopost.xml        # Одиночный XML для импорта в DLE
 │   ├── dle-social-autopost.zip        # Актуальный ZIP-архив плагина (latest)
-│   └── dle-social-autopost-v1.1.0.zip # Версионный ZIP-архив релиза
+│   └── dle-social-autopost-v1.1.1.zip # Версионный ZIP-архив релиза
 ├── docs/                              # Подробные руководства и GitHub Pages
+│   ├── images/
+│   │   ├── logo.svg                   # Векторный логотип плагина
+│   │   └── screenshots/               # Скриншоты панели управления (светлая/тёмная темы)
 │   ├── index.html                     # Страница презентации плагина
 │   ├── INSTALL.md                     # Инструкция по установке и обновлению
 │   ├── TELEGRAM_SETUP.md              # Пошаговая настройка Telegram бота и канала
