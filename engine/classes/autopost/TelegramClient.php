@@ -161,90 +161,79 @@ class Autopost_TelegramClient
         return [
             'success'      => true,
             'bot_username' => $botUsername,
-            'chat_title'   => 'N/A'
+            'chat_title'   => 'Not tested (Chat ID empty)'
         ];
     }
 
     /**
-     * Check endpoint availability & network latency for TSPU diagnostic
+     * Diagnostic tool: Check Telegram API endpoint reachability
      *
-     * @param string|null $customUrl Optional custom URL to test in addition to official API
-     * @param array       $proxyConfig Optional proxy configuration to test
-     * @return array Detailed diagnostic report with latency, DNS, TCP, SSL stats and verdict
+     * @param string|null $customUrl
+     * @param array       $proxyConfig
+     * @return array
      */
     public static function checkEndpointAvailability($customUrl = null, array $proxyConfig = [])
     {
-        $officialUrl = 'https://api.telegram.org';
         $tests = [];
 
-        // 1. Direct probe to official Telegram API
-        $officialProbe = self::probeUrl($officialUrl, []);
-        $tests['official_direct'] = [
-            'label'   => 'Прямое подключение к api.telegram.org',
-            'url'     => $officialUrl,
-            'proxy'   => false,
-            'result'  => $officialProbe
+        // 1. Direct Official Telegram API test
+        $officialUrl = 'https://api.telegram.org';
+        $directTest = self::probeUrl($officialUrl, []);
+        $tests['direct'] = [
+            'name'   => 'Официальный Telegram API (напрямую)',
+            'url'    => $officialUrl,
+            'result' => $directTest
         ];
 
-        // 2. Probe official API via configured proxy (if proxy provided)
+        // 2. Custom Endpoint test (if configured)
+        $cleanCustom = !empty($customUrl) ? rtrim(trim($customUrl), '/') : '';
+        if (!empty($cleanCustom) && $cleanCustom !== $officialUrl) {
+            $customTest = self::probeUrl($cleanCustom, []);
+            $tests['custom'] = [
+                'name'   => 'Пользовательский Endpoint API',
+                'url'    => $cleanCustom,
+                'result' => $customTest
+            ];
+        }
+
+        // 3. Proxy test (if configured)
         if (!empty($proxyConfig['address'])) {
-            $proxyProbe = self::probeUrl($officialUrl, $proxyConfig);
-            $tests['official_proxy'] = [
-                'label'   => 'Подключение к api.telegram.org через указанный прокси',
-                'url'     => $officialUrl,
-                'proxy'   => true,
-                'result'  => $proxyProbe
+            $proxyTest = self::probeUrl($officialUrl, $proxyConfig);
+            $tests['proxy'] = [
+                'name'   => 'Telegram API через указанный прокси',
+                'url'    => $officialUrl . ' via ' . $proxyConfig['address'],
+                'result' => $proxyTest
             ];
         }
 
-        // 3. Probe custom endpoint (if configured)
-        if (!empty($customUrl) && rtrim($customUrl, '/') !== $officialUrl) {
-            $customProbe = self::probeUrl($customUrl, []);
-            $tests['custom_endpoint'] = [
-                'label'   => 'Подключение к кастомному URL API (зеркало / реверс-прокси)',
-                'url'     => $customUrl,
-                'proxy'   => false,
-                'result'  => $customProbe
-            ];
-        }
+        // Generate verdict & recommendations
+        $directOk = $tests['direct']['result']['success'];
+        $customOk = isset($tests['custom']) ? $tests['custom']['result']['success'] : null;
+        $proxyOk = isset($tests['proxy']) ? $tests['proxy']['result']['success'] : null;
 
-        // Analyze results and produce human-friendly verdict
-        $directOk = $tests['official_direct']['result']['success'];
-        $proxyOk = isset($tests['official_proxy']) ? $tests['official_proxy']['result']['success'] : null;
-        $customOk = isset($tests['custom_endpoint']) ? $tests['custom_endpoint']['result']['success'] : null;
-
-        $verdict = [];
         if ($directOk) {
             $verdict = [
-                'status'        => 'ok',
-                'class'         => 'success',
-                'need_proxy'    => false,
-                'title'         => 'Прямой доступ к Telegram API открыт!',
-                'recommendation'=> 'Сервер успешно соединяется с api.telegram.org без ограничений. Прокси и кастомный URL не требуются.'
+                'type'    => 'success',
+                'badge'   => 'Прямое подключение активно',
+                'message' => 'Сервер свободно связывается с официальным API Telegram напрямую. Дополнительный эндпоинт или прокси не требуются.'
             ];
         } elseif ($customOk) {
             $verdict = [
-                'status'        => 'custom_ok',
-                'class'         => 'info',
-                'need_proxy'    => false,
-                'title'         => 'Прямой доступ заблокирован, но кастомный URL API работает!',
-                'recommendation'=> 'Прямой адрес api.telegram.org блокируется ТСПУ/провайдером, однако настроенный вами кастомный URL API отвечает штатно. Используйте его для публикации.'
+                'type'    => 'info',
+                'badge'   => 'Пользовательский эндпоинт активен',
+                'message' => 'Пользовательский Endpoint API успешно отвечает и готов к отправке сообщений.'
             ];
         } elseif ($proxyOk) {
             $verdict = [
-                'status'        => 'proxy_ok',
-                'class'         => 'warning',
-                'need_proxy'    => true,
-                'title'         => 'Прямой доступ заблокирован ТСПУ! Прокси работает успешно.',
-                'recommendation'=> 'Прямое подключение к api.telegram.org заблокировано ТСПУ (сброс TCP/TLS или таймаут). Настроенный прокси исправно обходит блокировку. Обязательно оставьте прокси включенным.'
+                'type'    => 'warning',
+                'badge'   => 'Подключение через прокси активно',
+                'message' => 'Соединение через указанный прокси успешно установлено и отвечает штатно.'
             ];
         } else {
             $verdict = [
-                'status'        => 'blocked',
-                'class'         => 'danger',
-                'need_proxy'    => true,
-                'title'         => 'Внимание: Доступ к Telegram API заблокирован!',
-                'recommendation'=> 'Прямое соединение к Telegram API блокируется (вероятно, ТСПУ РКН на сервере хостинга). Для работы автопостинга необходимо включить SOCKS5/HTTP прокси либо настроить свой URL реверс-прокси (зеркала).'
+                'type'    => 'danger',
+                'badge'   => 'Эндпоинт недоступен',
+                'message' => 'Официальный эндпоинт Telegram не отвечает на запросы с данного сервера (таймаут соединения). Укажите свой Endpoint API или включите прокси для стабильной отправки.'
             ];
         }
 

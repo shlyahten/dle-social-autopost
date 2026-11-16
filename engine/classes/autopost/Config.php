@@ -33,7 +33,7 @@ class Autopost_Config
             'tg_enabled'         => 0,
             'tg_bot_token'       => '',
             'tg_chat_id'         => '',
-            'tg_api_url'         => 'https://api.telegram.org', // custom reverse-proxy / mirror for TSPU bypass
+            'tg_api_url'         => 'https://api.telegram.org', // custom Endpoint API URL (proxy / gateway)
             'tg_parse_mode'      => 'HTML', // HTML or Markdown
             'tg_template'        => "<b>{title}</b>\n\n{short-story}\n\n{tags}",
             'tg_btn_enable'      => 1,
