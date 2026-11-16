@@ -1,7 +1,7 @@
 {
-    "version": "1.1.1",
+    "version": "1.1.2",
     "dle": "13.0-21.0",
     "url": "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost.xml",
-    "download_zip": "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost-v1.1.1.zip",
-    "description": "Автопостинг новостей в VK и Telegram v1.1.1: исправление синтаксиса MariaDB, нативные макросы DLE, адаптация хуков editnews/cron и стабильная установка через ZIP."
+    "download_zip": "https://shlyahten.github.io/dle-social-autopost/dle-social-autopost-v1.1.2.zip",
+    "description": "Автопостинг новостей в VK и Telegram v1.1.2: исправление синтаксиса MariaDB, нативные макросы DLE, адаптация хуков editnews/cron и стабильная установка через ZIP."
 }

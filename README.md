@@ -112,7 +112,7 @@ publisher-plugin/
 ├── dist/                              # Готовые дистрибутивы для установки
 │   ├── dle-social-autopost.xml        # Одиночный XML для импорта в DLE
 │   ├── dle-social-autopost.zip        # Актуальный ZIP-архив плагина (latest)
-│   └── dle-social-autopost-v1.1.1.zip # Версионный ZIP-архив релиза
+│   └── dle-social-autopost-v1.1.2.zip # Версионный ZIP-архив релиза
 ├── docs/                              # Подробные руководства и GitHub Pages
 │   ├── images/
 │   │   ├── logo.svg                   # Векторный логотип плагина

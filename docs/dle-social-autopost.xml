@@ -3,7 +3,7 @@
 	<name>DLE Social AutoPost (VK &amp; Telegram)</name>
 	<description>Автоматическая публикация пресс-релизов и новостей в Telegram-канал и группу ВКонтакте с поддержкой очередей, кастомного Endpoint API (зеркала / прокси), UTM-меток, CRON и умного поиска изображений.</description>
 	<icon>autopost.png</icon>
-	<version>1.1.1</version>
+	<version>1.1.2</version>
 	<dleversion>13.0-21.0</dleversion>
 	<versioncompare>greater</versioncompare>
 	<upgradeurl>https://shlyahten.github.io/dle-social-autopost/update.json</upgradeurl>
