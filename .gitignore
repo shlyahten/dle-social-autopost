@@ -1,0 +1,19 @@
+# Operating System files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE / Editor
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Logs and runtime configs
+engine/data/autopost.php
+*.log
+
+# Temp files
+/tmp/
+*.tmp
