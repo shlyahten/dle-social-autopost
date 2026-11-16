@@ -1,0 +1,141 @@
+name: Release & Update GitHub Pages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 1.1.0 or v1.1.0)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (build and test without publishing)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: gd, zip, json, simplexml, curl
+
+      - name: Determine Version
+        id: version_step
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            RAW_VER="${{ inputs.version }}"
+          elif [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            RAW_VER="${{ github.ref_name }}"
+          else
+            RAW_VER=$(php -r '$xml = simplexml_load_file("plugin.xml"); echo (string)$xml->version;')
+          fi
+          VERSION="${RAW_VER#v}"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Target version: ${VERSION} (Tag: ${TAG})"
+
+      - name: Run Test Suite
+        run: |
+          php tests/test_autopost.php
+
+      - name: Build Package & Sync Versions
+        run: |
+          php scripts/build.php "${{ steps.version_step.outputs.version }}"
+
+      - name: Commit & Push Version Bump to main
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if version files changed
+          git add plugin.xml dist/update.json docs/update.json
+          if ! git diff --staged --quiet; then
+            echo "Changes detected in version files. Committing to main..."
+            # Save dist artifacts
+            mkdir -p /tmp/dist_backup
+            cp -r dist/* /tmp/dist_backup/
+            
+            git stash --include-untracked
+            git checkout main
+            git stash pop || true
+            
+            # Restore dist
+            mkdir -p dist
+            cp -r /tmp/dist_backup/* dist/
+            
+            git add plugin.xml dist/update.json docs/update.json dist/dle-social-autopost.xml docs/dle-social-autopost.xml
+            git commit -m "chore(release): bump version to ${{ steps.version_step.outputs.version }} [skip ci]"
+            git push origin main
+          else
+            echo "Version files already up to date."
+          fi
+          
+          # If triggered via workflow_dispatch, create and push tag if needed
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if ! git rev-parse "${{ steps.version_step.outputs.tag }}" >/dev/null 2>&1; then
+              git tag -a "${{ steps.version_step.outputs.tag }}" -m "Release ${{ steps.version_step.outputs.tag }}"
+              git push origin "${{ steps.version_step.outputs.tag }}"
+            fi
+          fi
+
+      - name: Update GitHub Pages (gh-pages)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          mkdir -p /tmp/gh_pages_assets
+          cp dist/dle-social-autopost.xml /tmp/gh_pages_assets/
+          cp dist/update.json /tmp/gh_pages_assets/
+          cp docs/index.html /tmp/gh_pages_assets/
+          cp docs/logo.svg /tmp/gh_pages_assets/
+          cp dist/*.zip /tmp/gh_pages_assets/ || true
+          
+          git fetch origin gh-pages
+          git checkout gh-pages
+          
+          cp /tmp/gh_pages_assets/* ./
+          git add index.html logo.svg update.json dle-social-autopost.xml *.zip
+          if ! git diff --staged --quiet; then
+            git commit -m "docs(gh-pages): update release assets for ${{ steps.version_step.outputs.tag }} [skip ci]"
+            git push origin gh-pages
+          else
+            echo "GitHub Pages branch already up to date."
+          fi
+          
+          git checkout main
+
+      - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_step.outputs.tag }}
+          name: Release ${{ steps.version_step.outputs.tag }}
+          files: |
+            dist/dle-social-autopost-v${{ steps.version_step.outputs.version }}.zip
+            dist/dle-social-autopost.zip
+            dist/dle-social-autopost.xml
+          generate_release_notes: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

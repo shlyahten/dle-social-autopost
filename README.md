@@ -5,7 +5,8 @@
 # DLE Social AutoPost (VK & Telegram)
 
 [![DataLife Engine](https://img.shields.io/badge/DLE-13.0%20--%2021.0-blue.svg)](https://dle-news.ru)
-[![PHP Version](https://img.shields.io/badge/PHP-7.4%20|%208.0%20|%208.1%20|%208.2%20|%208.3%20|%208.4-8892BF.svg)](https://php.net)
+[![PHP Version](https://img.shields.io/badge/PHP-8.1%20|%208.2%20|%208.3%20|%208.4-8892BF.svg)](https://php.net)
+[![CI & Code Quality](https://github.com/shlyahten/dle-social-autopost/actions/workflows/ci.yml/badge.svg)](https://github.com/shlyahten/dle-social-autopost/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Профессиональный плагин для CMS **DataLife Engine (DLE)**, предназначенный для автоматической кросс-публикации пресс-релизов, новостей и статей в **Telegram-канал** и сообщество **ВКонтакте**.
@@ -44,13 +45,90 @@
   - **Очередь задач**: мониторинг статусов (`pending`, `processing`, `failed`, `done`), повторный запуск и удаление;
   - **Журнал публикаций**: история отправки, ID постов в соцсетях, подробные тексты ошибок API при сбоях;
   - **Диагностика и тест**: проверка подключения к Telegram-боту и VK API в 1 клик, а также тестовая ручная отправка любой существующей новости по ее ID.
-- 📦 **Установка в 1 клик и чистое удаление**: готовый дистрибутив в формате штатного менеджера плагинов DLE (XML/ZIP). При удалении плагина из панели DLE автоматически вычищаются все файлы, таблицы БД и настройки.
+- 📦 **Установка в 1 клик**: готовый дистрибутив в формате штатного менеджера плагинов DLE (XML/ZIP).
+
+---
+
+## 📂 Структура репозитория
+
+```text
+publisher-plugin/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                     # Автоматическое тестирование в GitHub Actions (PHP 8.1 - 8.4)
+│       └── release.yml                # Автосборка релизов и обновление GitHub Pages
+├── scripts/
+│   └── build.php                      # Релизный сборщик и валидатор пакетов (PHP CLI)
+├── tests/
+│   └── test_autopost.php              # Автоматический тестовый набор (45 тестов)
+├── build.sh                           # Shell-обертка запуска сборки
+├── plugin.xml                         # Манифест плагина для системы плагинов DLE
+├── dist/                              # Готовые дистрибутивы для установки
+│   ├── dle-social-autopost.xml        # Одиночный XML для импорта в DLE
+│   ├── dle-social-autopost.zip        # Актуальный ZIP-архив плагина (latest)
+│   └── dle-social-autopost-v1.1.0.zip # Версионный ZIP-архив релиза
+├── docs/                              # Подробные руководства и GitHub Pages
+│   ├── index.html                     # Страница презентации плагина
+│   ├── INSTALL.md                     # Инструкция по установке и обновлению
+│   ├── TELEGRAM_SETUP.md              # Пошаговая настройка Telegram бота и канала
+│   ├── VK_SETUP.md                    # Получение токена сообщества ВКонтакте
+│   └── CRON_SETUP.md                  # Настройка планировщика задач CRON
+├── engine/
+│   ├── classes/
+│   │   └── autopost/
+│   │       ├── Autopost.php           # Главный фасад и диспетчер событий
+│   │       ├── Config.php             # Менеджер конфигурации
+│   │       ├── Logger.php             # Логирование публикаций в БД
+│   │       ├── MediaHelper.php        # Умный экстрактор картинок (xfield / HTML / BB)
+│   │       ├── Queue.php              # Менеджер очереди публикаций
+│   │       ├── TelegramClient.php     # Клиент Telegram Bot API и кастомных эндпоинтов
+│   │       ├── TemplateEngine.php     # Рендерер шаблонов сообщений и UTM
+│   │       └── VkClient.php           # Клиент VK API (загрузка фото, wall.post)
+│   ├── inc/
+│   │   └── autopost.php               # Модуль панели управления DLE
+│   └── skins/
+│       └── images/
+│           └── autopost.png           # Иконка модуля для админпанели (128x128 RGBA)
+└── cron/
+    └── autopost.php                   # Консольный и Web обработчик очереди CRON
+```
+
+---
+
+## 🤖 Автоматизация релизов и CI/CD (GitHub Actions)
+
+В репозитории настроен пайплайн автоматической сборки, тестирования и публикации релизов по аналогии с [dle-wordpress-honeypot](https://github.com/shlyahten/dle-wordpress-honeypot):
+
+1. **`ci.yml` (Непрерывная интеграция)**:
+   - Запускается при каждом `push` в `main` и для всех Pull Requests.
+   - Матричное тестирование на **PHP 8.1, 8.2, 8.3, 8.4**.
+   - Синтаксический анализ (`php -l`), валидация манифеста `plugin.xml`, проверка манифестов `update.json`.
+   - Запуск полного набора тестов `php tests/test_autopost.php`.
+   - Пробная тестовая сборка дистрибутива (Dry Run).
+
+2. **`release.yml` (Автоматическая публикация релиза)**:
+   - Срабатывает автоматически при создании тега `v*` (например, `v1.1.0`), либо вручную через **Actions &rarr; Run workflow** (с возможностью указать номер версии).
+   - Автоматически синхронизирует версию в `plugin.xml`, `dist/update.json`, `docs/update.json`.
+   - Собирает дистрибутивы `dle-social-autopost.zip`, `dle-social-autopost-vX.Y.Z.zip` и `dle-social-autopost.xml`.
+   - Автоматически обновляет ветку **GitHub Pages (`gh-pages`)** актуальными манифестами и архивами.
+   - Публикует **GitHub Release** с прикреплением готовых дистрибутивов и автогенерацией Release Notes.
 
 ---
 
 ## ⚡ Быстрый старт
 
-### 1. Установка в DLE
+### 1. Установка плагина
+1. Скачайте актуальный архив [`dist/dle-social-autopost.zip`](https://github.com/shlyahten/dle-social-autopost/releases/latest) или перейдите на [GitHub Pages](https://shlyahten.github.io/dle-social-autopost/).
+2. В админпанели DLE перейдите в **«Управление плагинами»** &rarr; **«Загрузить плагин»** и выберите ZIP-архив.
+3. Плагин автоматически создаст необходимые таблицы в БД и добавит пункт управления в меню модулей.
 
-1. Скачайте архив `dist/dle-social-autopost-v1.1.0.zip` или XML-файл `dist/dle-social-autopost.xml`.
-2. В панели управления DLE откройте **«Управление плагинами»** и нажмите **«Загрузить плагин»**.\n3. Выберите скачанный файл.\n4. Модуль готов к работе! В списке модулей админпанели появится раздел **«Автопостинг VK & Telegram»**.
+### 2. Настройка каналов
+- **Telegram**: перейдите в [Руководство по Telegram](docs/TELEGRAM_SETUP.md), создайте бота через `@BotFather`, добавьте в канал и укажите Bot Token и Chat ID.
+- **ВКонтакте**: перейдите в [Руководство по ВКонтакте](docs/VK_SETUP.md), получите токен доступа сообщества и укажите его в настройках.
+
+### 3. Автоматизация фоновой очереди (CRON)
+- Подключите штатный крон DLE либо вызовите скрипт:
+  ```bash
+  * * * * * php -f /var/www/site.ru/cron/autopost.php -- key=ВАШ_СЕКРЕТНЫЙ_КЛЮЧ > /dev/null 2>&1
+  ```
+  Подробнее в [Руководстве по CRON](docs/CRON_SETUP.md).
