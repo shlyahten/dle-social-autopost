@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<dleplugin>
+	<name>DLE Social AutoPost (VK &amp; Telegram)</name>
+	<description>Автоматическая публикация пресс-релизов и новостей в Telegram-канал и группу ВКонтакте с поддержкой очередей, обхода блокировок ТСПУ (зеркала API / прокси), UTM-меток, CRON и умного поиска изображений.</description>
+	<icon>autopost.png</icon>
+	<version>1.1.0</version>
+	<dleversion>13.0-21.0</dleversion>
+	<versioncompare>greater</versioncompare>
+	<upgradeurl>https://shlyahten.github.io/dle-social-autopost/update.json</upgradeurl>
+	<filedelete>1</filedelete>
+	<filelist><![CDATA[engine/classes/autopost/Autopost.php
+engine/classes/autopost/Config.php
+engine/classes/autopost/Logger.php
+engine/classes/autopost/MediaHelper.php
+engine/classes/autopost/Queue.php
+engine/classes/autopost/TelegramClient.php
+engine/classes/autopost/TemplateEngine.php
+engine/classes/autopost/VkClient.php
+engine/inc/autopost.php
+engine/skins/images/autopost.png
+cron/autopost.php]]></filelist>
+	<needplugin></needplugin>
+	<mnotice>0</mnotice>
+	<mysqlinstall><![CDATA[CREATE TABLE IF NOT EXISTS `{prefix}_autopost_queue` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `news_id` int(11) NOT NULL,
+  `target` varchar(20) NOT NULL DEFAULT 'all',
+  `status` enum('pending','processing','failed','done') NOT NULL DEFAULT 'pending',
+  `attempts` tinyint(3) NOT NULL DEFAULT 0,
+  `error_message` text,
+  `created_at` datetime NOT NULL,
+  `updated_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `status` (`status`),
+  KEY `news_id` (`news_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `{prefix}_autopost_log` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `news_id` int(11) NOT NULL,
+  `channel` enum('telegram','vk') NOT NULL,
+  `remote_id` varchar(100) DEFAULT NULL,
+  `status` enum('success','error') NOT NULL,
+  `error_message` text,
+  `post_date` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `news_id` (`news_id`),
+  KEY `status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `{prefix}_admin_sections` (`name`, `title`, `descr`, `icon`, `allow_groups`) 
+VALUES ('autopost', 'Автопостинг VK & Telegram', 'Публикация пресс-релизов и новостей в соцсети', 'autopost.png', '1');]]></mysqlinstall>
+	<mysqlupgrade><![CDATA[]]></mysqlupgrade>
+	<mysqlenable><![CDATA[]]></mysqlenable>
+	<mysqldisable><![CDATA[]]></mysqldisable>
+	<mysqluninstall><![CDATA[DROP TABLE IF EXISTS `{prefix}_autopost_queue`;
+DROP TABLE IF EXISTS `{prefix}_autopost_log`;
+DELETE FROM `{prefix}_admin_sections` WHERE `name` = 'autopost';]]></mysqluninstall>
+	<phpinstall><![CDATA[]]></phpinstall>
+	<phpupgrade><![CDATA[]]></phpupgrade>
+	<phpenable><![CDATA[]]></phpenable>
+	<phpdisable><![CDATA[]]></phpdisable>
+	<phpuninstall><![CDATA[@unlink(ENGINE_DIR . '/data/autopost.php');
+$dir = ENGINE_DIR . '/classes/autopost';
+if (is_dir($dir)) {
+	$files = glob($dir . '/*');
+	if ($files) {
+		foreach ($files as $f) {
+			if (is_file($f)) @unlink($f);
+		}
+	}
+	@rmdir($dir);
+}]]></phpuninstall>
+	<phpdelete><![CDATA[@unlink(ENGINE_DIR . '/data/autopost.php');
+$dir = ENGINE_DIR . '/classes/autopost';
+if (is_dir($dir)) {
+	$files = glob($dir . '/*');
+	if ($files) {
+		foreach ($files as $f) {
+			if (is_file($f)) @unlink($f);
+		}
+	}
+	@rmdir($dir);
+}]]></phpdelete>
+	<notice><![CDATA[Плагин успешно установлен! Перейдите в раздел «Автопостинг VK & Telegram» в списке модулей панели управления, чтобы настроить параметры Telegram-бота и группы ВКонтакте.]]></notice>
+	<file name="engine/inc/addnews.php">
+		<operation action="after">
+			<searchcode><![CDATA[$lang['addnews_comm']]]></searchcode>
+			<replacecode><![CDATA[$lang['addnews_comm'];
+if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+	require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+	echo Autopost_Main::renderFormCheckboxes(null, false);
+}]]></replacecode>
+		</operation>
+		<operation action="after">
+			<searchcode><![CDATA[$db->insert_id();]]></searchcode>
+			<replacecode><![CDATA[
+if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+	require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+	$autopostNewsId = isset($row) && is_numeric($row) ? $row : (isset($id) && is_numeric($id) ? $id : $db->insert_id());
+	Autopost_Main::handleNewsSave($autopostNewsId, [
+		'send_tg' => !empty($_POST['autopost_tg']),
+		'send_vk' => !empty($_POST['autopost_vk']),
+		'is_new'  => true,
+	]);
+}]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/inc/editnews.php">
+		<operation action="after">
+			<searchcode><![CDATA[$lang['addnews_comm']]]></searchcode>
+			<replacecode><![CDATA[$lang['addnews_comm'];
+if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+	require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+	echo Autopost_Main::renderFormCheckboxes($row ?? null, true);
+}]]></replacecode>
+		</operation>
+		<operation action="after">
+			<searchcode><![CDATA[clear_cache( array( 'news_', 'full_' ) );]]></searchcode>
+			<replacecode><![CDATA[
+if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+	require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+	$autopostEditId = !empty($id) ? $id : (!empty($item_db[0]) ? $item_db[0] : intval($_GET['id'] ?? 0));
+	Autopost_Main::handleNewsSave($autopostEditId, [
+		'send_tg' => !empty($_POST['autopost_tg']),
+		'send_vk' => !empty($_POST['autopost_vk']),
+		'is_new'  => false,
+	]);
+}]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/modules/cron.php">
+		<operation action="after">
+			<searchcode><![CDATA[if( $allow_cron ) {]]></searchcode>
+			<replacecode><![CDATA[
+	if (file_exists(ENGINE_DIR . '/classes/autopost/Autopost.php')) {
+		require_once ENGINE_DIR . '/classes/autopost/Autopost.php';
+		Autopost_Queue::process(10);
+	}]]></replacecode>
+		</operation>
+	</file>
+	<file name="engine/ajax/plugins.php">
+		<operation action="replace">
+			<searchcode><![CDATA[$response = http_get_contents( $row['upgradeurl'], array(), true );]]></searchcode>
+			<replacecode><![CDATA[$response = http_get_contents( $row['upgradeurl'] );]]></replacecode>
+		</operation>
+	</file>
+</dleplugin>
