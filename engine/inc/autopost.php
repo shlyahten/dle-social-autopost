@@ -115,7 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    // 2.1 Check Telegram Endpoint Availability (Network / TSPU check)
+    // 2.1 Check Telegram Endpoint Availability
     if ($action === 'check_telegram_network' || isset($_GET['check_network'])) {
         $checkUrl = trim($_POST['tg_api_url'] ?? ($cfg['tg_api_url'] ?? 'https://api.telegram.org'));
         $proxy = [
@@ -217,6 +217,17 @@ $cfg = Autopost_Config::get();
 // UI Render
 // -----------------------------------------------------------------------------
 echoheader("Автопостинг VK & Telegram", "Публикация пресс-релизов и новостей в Telegram-канал и группу ВКонтакте");
+
+// Header Banner with Logo
+echo '<div class="panel panel-flat" style="margin-bottom: 20px; border-left: 3px solid #364A65; background: #fff;">
+    <div class="panel-body" style="padding: 15px 20px; display: flex; align-items: center;">
+        <img src="engine/skins/images/autopost.png" alt="AutoPost" style="width: 52px; height: 52px; margin-right: 18px; object-fit: contain;">
+        <div>
+            <h4 style="margin: 0 0 3px 0; font-weight: 700; color: #1e293b;">DLE Social AutoPost</h4>
+            <p class="text-muted" style="margin: 0; font-size: 13px;">Автоматическая кросс-публикация пресс-релизов и новостей в Telegram-канал и сообщество ВКонтакте</p>
+        </div>
+    </div>
+</div>';
 
 // Navigation Tabs
 $tabs = [
@@ -330,10 +341,10 @@ if ($tab === 'settings'):
             </div>
 
             <div class="form-group">
-                <label class="control-label col-md-3">Кастомный URL API Telegram (Зеркало / Reverse Proxy):</label>
+                <label class="control-label col-md-3">Пользовательский Endpoint API Telegram:</label>
                 <div class="col-md-6">
                     <input type="text" class="form-control" name="tg_api_url" value="<?php echo htmlspecialchars($cfg['tg_api_url'] ?? 'https://api.telegram.org'); ?>" placeholder="https://api.telegram.org">
-                    <span class="help-block">По умолчанию: <code>https://api.telegram.org</code>. Если прямой доступ к серверам Telegram заблокирован ТСПУ/РКН на вашем хостинге, укажите URL вашего прокси-зеркала (Cloudflare Worker, Nginx reverse proxy или локальный telegram-bot-api сервер, например <code>https://tg-proxy.mysite.com</code>).</span>
+                    <span class="help-block">По умолчанию: <code>https://api.telegram.org</code>. При необходимости вы можете указать собственный шлюз, реверс-прокси или локальный telegram-bot-api сервер (например: <code>https://tg-api.mysite.com</code> или <code>http://127.0.0.1:8081</code>).</span>
                 </div>
             </div>
 
@@ -381,7 +392,7 @@ if ($tab === 'settings'):
                         </div>
                     </div>
                     <div style="margin-top: 8px;">
-                        <a href="<?php echo $selfUrl; ?>&tab=diagnostics&check_network=1" class="btn btn-xs btn-default"><i class="fa fa-wifi"></i> Проверить доступность Telegram с сервера (нужен ли прокси/зеркало)</a>
+                        <a href="<?php echo $selfUrl; ?>&tab=diagnostics&check_network=1" class="btn btn-xs btn-default"><i class="fa fa-wifi"></i> Проверить доступность Endpoint Telegram с сервера</a>
                     </div>
                 </div>
             </div>
@@ -747,10 +758,10 @@ endif;
 // -----------------------------------------------------------------------------
 if ($tab === 'diagnostics'):
 ?>
-<!-- Network Diagnostics (TSPU / Proxy check) -->
+<!-- Network Diagnostics (Endpoint Availability check) -->
 <div class="panel panel-default" style="border-top: 3px solid #ff9800; margin-bottom: 25px;">
     <div class="panel-heading" style="display: flex; justify-content: space-between; align-items: center;">
-        <h6 class="panel-title"><i class="fa fa-wifi" style="color:#ff9800;"></i> Сетевая диагностика доступности Telegram API (Проверка блокировок ТСПУ)</h6>
+        <h6 class="panel-title"><i class="fa fa-wifi" style="color:#ff9800;"></i> Сетевая диагностика доступности Endpoint Telegram API</h6>
         <form action="<?php echo $selfUrl; ?>&tab=diagnostics" method="post" style="margin: 0;">
             <input type="hidden" name="user_hash" value="<?php echo $dle_login_hash; ?>">
             <input type="hidden" name="action" value="check_telegram_network">
@@ -763,7 +774,7 @@ if ($tab === 'diagnostics'):
     </div>
     <div class="panel-body">
         <p class="text-muted" style="margin-bottom: 15px;">
-            Данный инструмент отправляет прямые запросы к официальному серверу Telegram (<code>api.telegram.org</code>), а также через указанное зеркало или прокси, замеряя время DNS, TCP и TLS рукопожатия, чтобы однозначно определить, заблокирован ли Telegram на вашем сервере ТСПУ и требуется ли прокси.
+            Данный инструмент выполняет проверку сетевого подключения к официальному серверу Telegram (<code>api.telegram.org</code>) или указанному пользовательскому эндпоинту, замеряя время разрешения DNS, TCP-соединения и TLS-рукопожатия для диагностики стабильности связи.
         </p>
 
         <?php if (!empty($tgNetworkReport)): ?>
@@ -803,8 +814,8 @@ if ($tab === 'diagnostics'):
                                 <td>
                                     <?php if ($r['success']): ?>
                                         <span class="label label-success"><i class="fa fa-check"></i> Доступен</span>
-                                     <?php else: ?>
-                                        <span class="label label-danger"><i class="fa fa-ban"></i> Заблокирован</span>
+                                    <?php else: ?>
+                                        <span class="label label-danger"><i class="fa fa-times"></i> Недоступен</span>
                                     <?php endif; ?>
                                 </td>
                                 <td><code><?php echo $r['http_code'] > 0 ? $r['http_code'] : '0 (нет ответа)'; ?></code></td>
@@ -828,7 +839,7 @@ if ($tab === 'diagnostics'):
             </div>
         <?php else: ?>
             <div style="padding: 15px; background: #fafafa; border: 1px dashed #ddd; border-radius: 4px; text-align: center;">
-                <p style="margin: 0; color: #777;">Нажмите кнопку <b>«Запустить проверку доступности»</b>, чтобы протестировать сетевое подключение к Telegram с этого сервера и узнать, нужен ли прокси.</p>
+                <p style="margin: 0; color: #777;">Нажмите кнопку <b>«Запустить проверку доступности»</b>, чтобы протестировать сетевое подключение к Telegram с этого сервера.</p>
             </div>
         <?php endif; ?>
     </div>
@@ -856,7 +867,7 @@ if ($tab === 'diagnostics'):
                     </div>
 
                     <div class="form-group">
-                        <label>URL API Telegram (зеркало / proxy):</label>
+                        <label>Endpoint API Telegram:</label>
                         <input type="text" class="form-control" name="tg_api_url" value="<?php echo htmlspecialchars($cfg['tg_api_url'] ?? 'https://api.telegram.org'); ?>">
                     </div>
 
